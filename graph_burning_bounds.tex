@@ -1,0 +1,2055 @@
+%Planning to understand/simplify/improve. If you are interested, please contact me (Evangelos Kipouridis), I would be more than happy to do that collaboratively.
+%Licensed under CC BY 4.0
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern,microtype}
+\usepackage[a4paper,margin=28mm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem,listings,xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+\numberwithin{equation}{section}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newcommand{\Z}{\mathbb Z}
+\newcommand{\Q}{\mathbb Q}
+\newcommand{\R}{\mathbb R}
+\newcommand{\E}{\mathbb E}
+\newcommand{\Prob}{\mathbb P}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\ind}{\mathbf 1}
+\newcommand{\ecc}{\operatorname{ecc}}
+\newcommand{\rad}{\operatorname{rad}}
+\newcommand{\cL}{\overline L}
+\newcommand{\pos}[1]{\left(#1\right)_{+}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\lstset{basicstyle=\ttfamily\scriptsize,columns=fullflexible,
+ keepspaces=true,showstringspaces=false,breaklines=true,
+ breakatwhitespace=false,frame=single,rulecolor=\color{black!25},
+ numbers=left,numberstyle=\tiny\color{black!50},numbersep=6pt,
+ xleftmargin=10pt,framexleftmargin=8pt,tabsize=4}
+\setlist{itemsep=3pt,topsep=5pt}
+\title{Upper and Lower Bounds for Approximating Graph Burning}
+\author{}
+\date{}
+
+\begin{filecontents*}[overwrite]{graph_burning_profile.json}
+{
+  "a": "0.11214",
+  "atom": "0.55101",
+  "knots": [
+    "0",
+    "0.21324",
+    "0.64319",
+    "1.11214"
+  ],
+  "density": [
+    "1.35164",
+    "0.94044",
+    "1.35164"
+  ]
+}
+\end{filecontents*}
+
+\begin{filecontents*}[overwrite]{graph_burning_certificate.py}
+#!/usr/bin/env python3
+"""Exact scalar certificate for a rational piecewise constant enlargement density."""
+from fractions import Fraction as F
+from math import factorial,lcm
+from array import array
+from pathlib import Path
+from decimal import Decimal,localcontext
+import argparse,json,subprocess,sys,time
+
+S=10**12;T=10**40
+def floorf(x):return x.numerator//x.denominator
+def ceilf(x):return -((-x.numerator)//x.denominator)
+def cd(a,b):return -((-a)//b)
+ECU=[ceilf(F((-1)**j,factorial(j))*T) for j in range(21)]
+ECL=[floorf(F((-1)**j,factorial(j))*T) for j in range(22)]
+FCU=[ceilf(F((-1)**j,factorial(j+1))*T) for j in range(21)]
+FCL=[floorf(F((-1)**j,factorial(j+1))*T) for j in range(22)]
+def evaluate(num,den,coef,upper):
+    x=num*T//den if upper else cd(num*T,den);y=coef[-1]
+    for z in reversed(coef[:-1]):y=(cd(y*x,T) if upper else y*x//T)+z
+    return y
+def up_exp(num,den):return min(S,cd(evaluate(num,den,ECU,True)*S,T))
+def lo_exp(num,den):return max(0,evaluate(num,den,ECL,False)*S//T)
+def up_phi(num,den):return min(S,cd(evaluate(num,den,FCU,True)*S,T))
+
+def main():
+    ap=argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('profile')
+    ap.add_argument('--source-grid',type=int,default=65536)
+    ap.add_argument('--time-grid',type=int,default=65536)
+    ap.add_argument('--primitive-grid',type=int,default=524288)
+    ap.add_argument('--reuse-tables',action='store_true')
+    args=ap.parse_args();nr=args.source_grid;nt=args.time_grid;nq=args.primitive_grid
+    assert nq%nr==nq%nt==nt%nr==0
+    path=Path(args.profile).resolve();base=path.parent
+    obj=json.loads(path.read_text());a=F(obj['a']);atom=F(obj['atom'])
+    knots=list(map(F,obj['knots']));dens=list(map(F,obj['density']));n=len(dens)
+    assert knots[0]==0 and knots[-1]==1+a and len(knots)==n+1
+    assert all(x<y for x,y in zip(knots,knots[1:])) and all(x>=0 for x in dens)
+    W=atom+sum(p*(u-l) for p,l,u in zip(dens,knots,knots[1:]))
+    assert 0<a<F(3,20) and 0<atom<W/2 and W<2 and max(dens)<2
+    assert atom+max(dens)<2 and atom+max(dens)+2*max(dens)*W<7
+    assert max(dens)*a<1
+    coord=lcm(*(x.denominator for x in knots+[a]));kc=[int(x*coord) for x in knots]
+    atomS=int(atom*S);WS=int(W*S);PS=[int(p*S) for p in dens]
+    assert atom*S==atomS and W*S==WS and all(p*S==q for p,q in zip(dens,PS))
+    assert all(p%coord==0 for p in PS)
+    assert 2*WS*nq*(coord*nt)**2 < 2**126
+    FK=[atomS]
+    for p,l,u in zip(PS,kc,kc[1:]):
+        assert p*(u-l)%coord==0
+        FK.append(FK[-1]+p*(u-l)//coord)
+    assert FK[-1]==WS
+    def fnum(x,nn):
+        z=atomS*coord*nn
+        for p,l,u in zip(PS,kc,kc[1:]):z+=p*min(max(x-l*nn,0),(u-l)*nn)
+        return z
+    def gnum(j,nn):
+        if j*coord>=kc[-1]*nn:return 0
+        mx=2*fnum(j*coord,nn)
+        for k,f in zip(kc,FK):
+            if k*nn<=2*j*coord:mx=max(mx,f*coord*nn+fnum(2*j*coord-k*nn,nn))
+        return max(0,min(WS*coord*nn,2*WS*coord*nn-mx))
+    def dnum(j,nn):return WS*coord*nn-fnum(j*coord,nn)
+    stem=path.stem+f'_{nr}_{nt}_{nq}';tables=base/(stem+'.bin');result=base/(stem+'.certificate.json')
+    if not(args.reuse_tables and tables.exists()):
+        started=time.monotonic()
+        qu=array('q');ql=array('q');fu=array('q');den=S*coord*nq
+        for j in range(3*nq+1):
+            z=gnum(j,nq)
+            qhi=qlo=fhi=S if z==0 else 0
+            if z:qhi=up_exp(z,den);qlo=lo_exp(z,den);fhi=up_phi(z,den)
+            assert 0<=qlo<=qhi<=S and 0<fhi<=S
+            qu.append(qhi);ql.append(qlo);fu.append(fhi)
+        assert all(x<=y for x,y in zip(qu,qu[1:])) and all(x<=y for x,y in zip(ql,ql[1:]))
+        assert all(x<=y for x,y in zip(fu,fu[1:]))
+        ou=array('q',[up_exp(dnum(j,nt),S*coord*nt) for j in range(3*nt+1)])
+        eu=array('q',[up_exp(gnum(j,2*nt),S*coord*2*nt) for j in range(2*nt+1)])
+        assert sys.byteorder=='little' and array('q').itemsize==8
+        with tables.open('wb') as out:
+            array('q',[211250002,S,nq,nt,nr,coord,n,atomS,WS,int(a*coord),int((1+a)*coord)]).tofile(out)
+            for vals in (array('q',kc),array('q',PS),qu,ql,fu,ou,eu):vals.tofile(out)
+        print('Exact tables generated in',round(time.monotonic()-started,2),'seconds',flush=True)
+    executable=base/'graph_burning_certificate_verify'
+    subprocess.run(['g++','-std=c++17','-O3','-Wall','-Wextra',str(base/'graph_burning_certificate.cpp'),'-o',str(executable)],check=True)
+    subprocess.run([str(executable),str(tables),str(result)],check=True)
+    out=json.loads(result.read_text());j=F(int(out['numerator']),int(out['denominator']));cap=F(int(out['capacity_numerator']),int(out['capacity_denominator']))
+    assert j<F(999999,1000000) and cap>F(1,10)
+    print('J_UPPER_EXACT =',j)
+    with localcontext() as ctx:
+        ctx.prec=60
+        print('J_UPPER_DECIMAL =',Decimal(j.numerator)/Decimal(j.denominator))
+        print('A_LOWER_DECIMAL =',Decimal(cap.numerator)/Decimal(cap.denominator))
+    print('CERTIFIED: J < 0.999999 and A(s) > 0.1.')
+if __name__=='__main__':main()
+\end{filecontents*}
+
+\begin{filecontents*}[overwrite]{graph_burning_certificate.cpp}
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+using i64=std::int64_t;using i128=__int128_t;
+static i64 cd(i128 a,i128 b){assert(b>0);i128 v=a>=0?(a+b-1)/b:a/b;assert(v<=INT64_MAX&&v>=INT64_MIN);return (i64)v;}
+static std::string dec(i128 x){if(!x)return "0";bool neg=x<0;if(neg)x=-x;std::string s;while(x){s.push_back('0'+x%10);x/=10;}if(neg)s.push_back('-');std::reverse(s.begin(),s.end());return s;}
+static i64 ri(std::ifstream&f){i64 v;f.read((char*)&v,8);assert(f.good());return v;}
+static std::vector<i64> rv(std::ifstream&f,size_t n){std::vector<i64>v(n);f.read((char*)v.data(),8*n);assert(f.good());return v;}
+int main(int argc,char**argv){
+ assert(argc==3);std::ifstream f(argv[1],std::ios::binary);assert(f.good());
+ assert(ri(f)==211250002);const i64 S=ri(f),nq=ri(f),nt=ri(f),nr=ri(f),C=ri(f),n=ri(f);
+ const i64 atom=ri(f),W=ri(f),ac=ri(f),mc=ri(f);
+ assert(S==1000000000000LL&&nq%nt==0&&nq%nr==0&&nt%nr==0&&n>0&&n<30);
+ auto knots=rv(f,n+1),P=rv(f,n),qu=rv(f,3*nq+1),ql=rv(f,3*nq+1),fu=rv(f,3*nq+1),ou=rv(f,3*nt+1),enu=rv(f,2*nt+1);
+ const i64 H=S*nq,T=C*nq,AH=atom*nq,WH=W*nq;
+ assert(H>0&&H<1000000000000000000LL&&T>0&&T<1000000000000000000LL&&T%nt==0&&T%nr==0);
+ std::vector<i64> slope(n),pu(3*nq+1),pl(3*nq+1);
+ for(int h=0;h<n;h++){assert(P[h]%C==0);slope[h]=P[h]/C;}
+ for(i64 j=1;j<=3*nq;j++){
+  assert(0<=ql[j]&&ql[j]<=qu[j]&&qu[j]<=S&&qu[j-1]<=qu[j]&&ql[j-1]<=ql[j]&&fu[j-1]<=fu[j]&&fu[j]<=S);
+  pu[j]=pu[j-1]+qu[j];pl[j]=pl[j-1]+ql[j-1];
+ }
+ auto pf=[&](const std::vector<i64>&pref,const std::vector<i64>&qs,i64 x,bool right,bool up){
+  assert(x>=0&&x<3*T);i64 j=x/C,z=x%C;
+  return pref[j]+(up?cd((i128)qs[j+(right?1:0)]*z,C):(i64)((i128)qs[j+(right?1:0)]*z/C));
+ };
+ const i64 nj=cd((i128)mc*nt,C),step=T/nt;
+ std::vector<i128> acc(nj+1);
+ for(i64 ii=1;ii<=nr;ii++){
+  const i64 rc=ii*(T/nr),rq=ii*(nq/nr);
+  const i64 aqlo=(i64)((i128)AH*ql[rq]/S),aqup=cd((i128)AH*qu[rq],S);
+  std::vector<i64>lo(n),hi(n),pustart(n),plstart(n),plend(n);
+  for(int h=0;h<n;h++){
+   lo[h]=rc+knots[h]*nq;hi[h]=rc+knots[h+1]*nq;
+   pustart[h]=pf(pu,qu,lo[h],true,false);plstart[h]=pf(pl,ql,lo[h],false,true);plend[h]=pf(pl,ql,hi[h],false,false);
+  }
+  auto tail=[&](i64 x){i64 v=WH-(x>rc?AH:0);for(int h=0;h<n;h++)v-=slope[h]*std::clamp(x-lo[h],(i64)0,hi[h]-lo[h]);assert(v>=0&&v<=WH);return v;};
+  auto preup=[&](i64 x){i64 v=x>rc?aqup:0;for(int h=0;h<n;h++)if(x>lo[h])v+=cd((i128)P[h]*(pf(pu,qu,std::min(x,hi[h]),true,true)-pustart[h]),S);return v;};
+  auto prelo=[&](i64 x){i64 v=x>rc?aqlo:0;for(int h=0;h<n;h++)if(x>lo[h])v+=(i64)((i128)P[h]*std::max<i64>((x>=hi[h]?plend[h]:pf(pl,ql,x,false,false))-plstart[h],0)/S);return v;};
+  i64 running=preup(mc*nq)+tail(mc*nq);
+  for(i64 j=nj;j>=0;j--){
+   const i64 x=j*step,qq=j*(nq/nt),ta=tail(x);
+   const i64 point=preup(x)+cd((i128)fu[qq]*ta,S);
+   running=std::max(running,point);
+   // In an open cell beginning at the source atom, the atom has already
+   // moved from T into Q. Treat the endpoint itself by `point` above.
+   const i64 tright=ta-(x==rc?AH:0);
+   const i64 cell=preup(x+step)+cd((i128)fu[qq+nq/nt]*tright,S);
+   running=std::max(running,cell);
+   i64 val=std::min(ta,std::max<i64>(0,running-prelo(x)));
+   if(x>=mc*nq)val=ta;
+   acc[j]+=val;
+  }
+  if(ii%(std::max<i64>(1,nr/8))==0)std::cerr<<"source rows "<<ii<<" / "<<nr<<"\n";
+ }
+ const i64 TC=C*nt;const i128 denmass=2*(i128)TC*TC;
+ auto cdf=[&](i64 x){
+  auto pp=[](i64 z)->i128{return z>0?(i128)z*z:0;};
+  i128 val=2*(i128)AH*TC*std::clamp(x,(i64)0,TC);
+  for(int h=0;h<n;h++){
+   const i64 l=knots[h]*nt,u=knots[h+1]*nt;
+   val+=(i128)P[h]*nq*(pp(x-l)-pp(x-u)-pp(x-TC-l)+pp(x-TC-u));
+  }
+  return val;
+ };
+ std::vector<i64> old(3*nt+1);i128 nxt=cdf(3*TC);
+ for(i64 j=3*nt-1;j>=0;j--){i128 cur=cdf(j*C);assert(nxt>=cur);i64 mass=cd(nxt-cur,denmass);old[j]=old[j+1]+cd((i128)mass*ou[j+1],S);nxt=cur;}
+ assert(nxt==0&&cdf(3*TC)==(i128)WH*denmass);
+ assert((i128)ac*H%C==0);const i64 abase=2*H+(i64)((i128)ac*H/C),tstep=H/nt;
+ i64 running=INT64_MAX,amin=INT64_MAX,previous_raw=0;i128 jsum=0;
+ for(i64 j=0;j<=2*nt;j++){
+  i64 mu=old[j];if(j<=nj)mu=std::min(mu,cd(acc[j],nr));
+  const i64 raw=abase-j*tstep-mu;
+  running=std::min(running,raw);
+  if(j){
+   // Both mean envelopes lose at most Lambda([x,y]) when their threshold
+   // increases from x to y. If Lambda's density is at most one on a cell,
+   // 2+a-theta-M(theta) is nonincreasing there: its minimum is the right
+   // endpoint. Otherwise use the left endpoint minus one cell width.
+   const i64 left=(j-1)*C,right=j*C;
+   i128 density_upper=left<TC?(i128)atom*TC:0;
+   for(int h=0;h<n;h++){
+    const i64 l=knots[h]*nt,u=knots[h+1]*nt;
+    const i64 overlap=std::max<i64>(0,std::min(TC,right-l)-std::max<i64>(0,left-u));
+    density_upper+=(i128)P[h]*overlap;
+   }
+   const i64 cell_lower=density_upper<=(i128)S*TC?raw:previous_raw-tstep;
+   running=std::min(running,cell_lower);
+  }
+  previous_raw=raw;
+  const i64 cap=running;amin=std::min(amin,cap);assert(cap>H/10);
+  if(j)jsum+=cd((i128)enu[j]*H,cap);
+ }
+ const i128 denJ=2*(i128)nt*S;
+ std::cerr<<"J exact: "<<dec(jsum)<<" / "<<dec(denJ)<<"\n";
+ std::ofstream out(argv[2]);out<<"{\"numerator\":\""<<dec(jsum)<<"\",\"denominator\":\""<<dec(denJ)<<"\",\"capacity_numerator\":\""<<amin<<"\",\"capacity_denominator\":\""<<H<<"\"}\n";
+ assert(jsum*1000000<999999*denJ);
+ std::cerr<<"CERTIFIED J < 999999/1000000 and A > 1/10\n";
+}
+\end{filecontents*}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+Let $G=(V,E)$ be a finite nonempty simple undirected graph, let
+$n=|V|$, and let $B_G(v,r)$ denote the vertices at graph distance at most
+$r$ from $v$. The burning number $b(G)$ is the least positive integer
+$L$ for which $V=\bigcup_{i=1}^{L}B_G(v_i,L-i)$ for some vertices
+$v_1,\ldots,v_L$. We give a deterministic polynomial-time
+$(2.11214+\varepsilon)$-approximation for every fixed $\varepsilon>0$;
+in particular, a legal burning sequence of length at most $\lfloor2.112141b(G)\rfloor$
+can be constructed. The numerical inequality used in this proof is
+certified by exact rational arithmetic, with the complete verification
+procedure included. Given a positive integer $k$, we also give a $4^k n^{O(1)}$-time
+algorithm returning a legal burning sequence of length at most $2k-1$
+whenever $b(G)\le k$.
+Finally, for every fixed $\alpha<2$ with $\alpha\ge1$, approximation
+within factor $\alpha$ is NP-hard even on connected bipartite graphs.
+The hardness proof is a reduction from the constant-gap Set Cover problem.
+\end{abstract}
+
+\section{Definitions and theorem statements}\label{sec:definitions}
+
+All graphs in this paper are finite, simple, undirected, and nonempty.
+Thus a graph $G=(V,E)$ consists of a nonempty vertex set $V$ and a set
+$E$ of unordered pairs of distinct vertices. Every edge has length one.
+Fix an ordering of $V$ and the induced lexicographic orderings of finite
+tuples. Whenever a choice is not unique, use the first permitted
+candidate in the corresponding fixed ordering.
+Write $n=|V|$. The distance $d_G(u,v)$ is the minimum number of edges in
+a path from $u$ to $v$, and is $+\infty$ when no such path exists.
+A connected component is an equivalence class of the relation
+$d_G(u,v)<+\infty$. A graph is connected if it has one component.
+A graph is bipartite if its vertices admit a partition into two sets
+such that every edge joins different sets. For $v\in V$ and $r\ge0$, set
+\[
+ B(v,r)=B_G(v,r)=\{w\in V:d_G(v,w)\le r\}.
+\]
+For a component $C$ and $v\in C$, define
+\[
+ \ecc_C(v)=\max_{w\in C}d_G(v,w),\qquad
+ \rad(C)=\min_{v\in C}\ecc_C(v).
+\]
+
+For an integer $q\ge0$, write $[q]=\{1,\ldots,q\}$, with $[0]=\varnothing$.
+The symbols $\Z$, $\Q$, and $\R$ denote the integers, rational numbers,
+and real numbers, respectively. A subscript restricts these sets by the
+displayed inequality; for example, $\Z_{\ge1}$ denotes the positive
+integers.
+For a proposition $P$, its indicator $\ind_P$ is one if $P$ holds and zero
+otherwise. Put $x_+=\max\{0,x\}$ and
+$[x]_0^c=\max\{0,\min\{c,x\}\}$ for $c\ge0$.
+The symbols $\lfloor x\rfloor$ and $\lceil x\rceil$ denote the greatest
+integer at most $x$ and the least integer at least $x$, respectively.
+All finite decimal constants denote exact rational numbers, and $\log$
+denotes the natural logarithm. For a function on a finite nonempty set,
+$\argmin$ denotes the set of arguments attaining its minimum.
+
+A finite probability space is a finite set $\Omega$ with nonnegative
+weights $\pi(\omega)$ summing to one. For $A\subseteq\Omega$ and
+$Z:\Omega\to\R$, write
+$\Prob(A)=\sum_{\omega\in A}\pi(\omega)$,
+$\E Z=\sum_{\omega\in\Omega}\pi(\omega)Z(\omega)$, and
+$\Var Z=\E(Z-\E Z)^2$.
+Conditional expectation on an event of positive probability is the
+weighted average restricted to that event and divided by its probability.
+Conditional expectation given specified random variables applies this
+rule separately for each joint value of those variables having positive
+probability.
+Random variables are independent when their joint point probabilities
+are products of their individual point probabilities.
+
+\begin{definition}\label{def:burning}
+A covering sequence of length $L\in\Z_{\ge1}$ is a sequence
+$(v_1,\ldots,v_L)\in V^L$ such that
+\begin{equation}\label{eq:cover-sequence}
+ V=\bigcup_{i=1}^{L}B(v_i,L-i).
+\end{equation}
+The burning number $b(G)$ is the minimum length of a covering sequence.
+The vertex chosen at a round is called the source at that round.
+For a sequence $(v_1,\ldots,v_L)$, define its burned sets by
+\[
+ \mathcal B_0=\varnothing,\qquad
+ \mathcal B_i=\bigcup_{j=1}^i B(v_j,i-j)\quad(i\in[L]).
+\]
+The set $\mathcal B_i$ consists of the vertices burned by the end of
+round $i$. A legal burning sequence is a covering sequence satisfying
+$v_i\notin\mathcal B_{i-1}$ for every $i\in[L]$.
+This condition implies $\mathcal B_i\ne V$ for $i<L$, so the sequence
+terminates at the first round when all vertices have burned.
+\end{definition}
+
+Lemma~\ref{lem:legalization} proves that the same minimum is obtained
+from legal burning sequences. In particular, $1\le b(G)\le n$.
+An $\alpha$-approximation, for $\alpha\ge1$, returns a legal burning
+sequence of length at most $\alpha b(G)$ on every input graph.
+Running time refers to bit operations on an adjacency-matrix encoding of
+$G$ and binary encodings of integer or rational parameters. The notation
+$n^{O_\varepsilon(1)}$ permits both a multiplicative constant and an
+exponent depending on a fixed $\varepsilon$, but not on $G$ or $b(G)$.
+The notation $4^k n^{O(1)}$ has an exponent independent of $k$.
+
+\begin{theorem}\label{thm:poly}
+For every fixed $\varepsilon>0$, there is a deterministic
+$n^{O_\varepsilon(1)}$-time $(2.11214+\varepsilon)$-approximation for
+graph burning. In particular, there is a deterministic polynomial-time
+algorithm returning a legal burning sequence of length at most
+$\lfloor2.112141b(G)\rfloor$.
+\end{theorem}
+
+\begin{theorem}\label{thm:fpt}
+Given $G$ and $k\in[n]$, a deterministic algorithm runs in
+$4^k n^{O(1)}$ time and either returns a legal burning sequence of length
+at most $2k-1$ or returns \textnormal{NO}. If it returns \textnormal{NO},
+then $b(G)>k$. Consequently there is a deterministic
+$4^{b(G)}n^{O(1)}$-time algorithm returning a legal burning sequence of
+length at most $2b(G)-1$.
+\end{theorem}
+
+We use the conventional complexity classes $\mathrm P$ and $\mathrm{NP}$:
+$\mathrm P$ consists of decision problems solvable in deterministic
+polynomial time, and $\mathrm{NP}$ consists of decision problems whose
+positive answers have polynomial-size certificates verifiable in
+polynomial time. A promise problem specifies disjoint sets of positive
+and negative inputs, and an algorithm must be correct on those inputs.
+NP-hardness of a promise problem means that every problem in
+$\mathrm{NP}$ has a polynomial-time many-one reduction mapping positive
+inputs to positive inputs and negative inputs to negative inputs.
+
+\begin{theorem}\label{thm:hardness}
+For every fixed integer $\ell\ge3$, the following promise problem is
+NP-hard on connected bipartite graphs. Its input is a graph $G$ and a
+positive integer $k$, and its two cases are
+\begin{equation}\label{eq:hardness-gap}
+ b(G)\le 2(\ell+1)k
+ \qquad\text{and}\qquad
+ b(G)>(4\ell-2)k.
+\end{equation}
+Therefore, for every fixed $\alpha\in[1,2)$, a polynomial-time
+$\alpha$-approximation on connected bipartite graphs implies
+$\mathrm P=\mathrm{NP}$.
+\end{theorem}
+
+Only these three results and the lemmas needed to prove them are developed
+below. The polynomial-time upper bound uses geometric grouping of radii
+and cumulative counts; this organization is related to the grouping of
+Blauth, N\"obel, and Zenklusen~\cite{BNZ}. All rounding statements used
+here are proved here.
+
+\section{Covering sequences, deadlines, and cumulative counts}
+\label{sec:tools}
+
+\begin{lemma}[Legalization]\label{lem:legalization}
+Let $m,L$ be positive integers. Suppose the balls $B(u_j,R_j)$,
+$j\in[m]$, cover $V$ and have pairwise distinct assigned rounds
+$t_j\in[L]$, where $0\le R_j\le L-t_j$. A legal burning sequence of
+length at most $L$ can be found in polynomial time.
+\end{lemma}
+\begin{proof}
+Fill every unassigned round with any vertex to obtain a planned sequence
+$(v_1,\ldots,v_L)$ satisfying~\eqref{eq:cover-sequence}. Process its
+rounds in increasing order. If every vertex has burned, terminate. If
+$v_i$ has not burned, ignite $v_i$. Otherwise ignite the first vertex
+that has not burned. In the latter case, some actual source $w$ ignited
+at an earlier round $j<i$ satisfies $d_G(w,v_i)\le i-j$.
+The triangle inequality gives
+\[
+ B(v_i,L-i)\subseteq B(w,L-j).
+\]
+If the procedure reaches round $L$, every planned ball is therefore
+contained in the radius-$(L-j)$ ball of some actual source at round $j$.
+The planned balls cover $V$, so all vertices have burned by round $L$.
+Termination at an earlier round also gives the required sequence.
+Padding is represented implicitly. Each processed round ignites an
+unburned vertex, so at most $n$ rounds are processed. Distances and
+all choices can be computed in polynomial time.
+\end{proof}
+
+\subsection{The parameterized algorithm}
+
+\begin{proof}[Proof of Theorem~\ref{thm:fpt}]
+Partition $[k]$ into consecutive blocks as follows. For a current prefix
+$[q]$, take its last block
+$[h,q]$, where $h=\lfloor q/2\rfloor+1$, and repeat on $[h-1]$ until
+the prefix is empty. The notation $[h,q]$ denotes
+$\{h,h+1,\ldots,q\}$. Replace each radius $k-i$ in a block $[h,q]$ by
+$k-h$. These are rounded radii, each occurring with the multiplicity of
+its block.
+
+Maintain uncovered vertices and the multiset of unused rounded radii.
+Choose the first uncovered vertex $v$. For each distinct unused rounded
+radius $r$, form a branch that chooses $B(v,2r)$, deletes its vertices
+from the uncovered set, and deletes one occurrence of $r$. A branch
+succeeds when no vertex remains. It fails when vertices remain but no
+radius remains. Return \textnormal{NO} if every branch fails.
+
+If $b(G)\le k$, there is a cover by the original radii $k-i$, and hence
+by the rounded radii. In a branch consistent with such a cover, let an
+unused covering ball $B(w,r)$ contain the chosen vertex $v$. Then
+$B(w,r)\subseteq B(v,2r)$. Removing this covering ball and the vertices
+of $B(v,2r)$ leaves a cover of the remaining vertices by the other unused
+covering balls. Induction on the remaining radii proves that some branch
+succeeds. Thus \textnormal{NO} implies $b(G)>k$.
+
+Assign balls produced from a block $[h,q]$ to distinct rounds in that
+block. Since $q\le2h-1$,
+\[
+ (2k-1)-q\ge2(k-h).
+\]
+Every chosen ball fits its assigned round in horizon $2k-1$.
+Lemma~\ref{lem:legalization} gives the legal sequence.
+
+For each prefix size $q$ occurring in the recursive partition, let $M(q)$
+be the number of permutations of the rounded-radius multiset from the
+first $q$ indices. The blocks have distinct rounded radii, and
+\[
+ M(q)=\binom{q}{\lceil q/2\rceil}M(\lfloor q/2\rfloor),
+ \qquad M(0)=1.
+\]
+The bound $\binom{q}{\lceil q/2\rceil}\le2^q$ and
+$\sum_{j\ge0}\lfloor k/2^j\rfloor\le2k$ imply $M(k)\le4^k$.
+Every search node is a prefix of a multiset permutation. The number of
+nodes is at most $(k+1)M(k)$, and each node requires polynomial time.
+This proves the first assertion. Test $k=1,\ldots,n$ and stop at the
+first success. Success occurs by $b(G)$; the sum of running times through
+that guess is $4^{b(G)}n^{O(1)}$, and the returned length is at most
+$2b(G)-1$.
+\end{proof}
+
+\subsection{Unit jobs with deadlines}
+
+A unit job occupies one integer position and has an integer deadline
+$d$; its position must be at most $d$. A placement of a family of unit
+jobs assigns pairwise distinct positions to those jobs.
+
+\begin{lemma}\label{lem:deadlines}
+Let $T$ be a positive integer. Consider a finite family of unit jobs
+with deadlines in $[T]$, and let $m_j$ be the number
+with deadline at most $j$ for $j\in[T]$, with $m_0=0$.
+They can be placed in $[T]$ if and only if $m_j\le j$ for every $j\in[T]$.
+Placing each job in the latest
+unoccupied position at most its deadline produces a placement for which
+the number $F(D)$ of free positions in $[D]$ satisfies, for every
+integer $D\in\{0,\ldots,T\}$,
+\begin{equation}\label{eq:free-positions}
+ F(D)=\min_{D\le j\le T}(j-m_j)\qquad(0\le D\le T).
+\end{equation}
+\end{lemma}
+\begin{proof}
+Necessity of $m_j\le j$ follows by counting positions. For sufficiency,
+sort the deadlines as $d_1\le\cdots\le d_s$. Then $i\le m_{d_i}\le d_i$,
+so placing job $i$ at position $i$ is feasible.
+The latest-position procedure also succeeds: starting with any feasible
+placement of the unplaced jobs, move the next job from its current
+position to the latest free position allowed by its deadline. If another
+unplaced job occupies that position in the feasible placement, move that
+job to the first job's old position. The latter position is earlier, so
+both deadlines are respected. This preserves a feasible completion.
+
+For every feasible placement and $j\ge D$, at least
+$m_j-(j-D)$ jobs occupy $[D]$, so $F(D)\le j-m_j$.
+For the reverse inequality, let $u$ be the first free position after
+$D$ in the latest-position placement, if one exists. Every job placed
+before $u$ has deadline less than $u$, since $u$ was available when that
+job was placed. Thus $F(D)=u-1-m_{u-1}$, and $u-1\ge D$.
+If no free position follows $D$, then $F(D)=T-m_T$.
+In either case equality holds for one of the terms in the minimum.
+\end{proof}
+
+\subsection{Fractional covering with cumulative counts}
+
+\begin{lemma}\label{lem:cumulative-rounding}
+Let $U\subseteq V$ be a client set, and let $s$ be a positive integer.
+Let $R_1>\cdots>R_s\ge0$ be
+integer radii and $1\le a_1\le\cdots\le a_s$ be integers.
+For a finite index set $\mathcal E$, let $c_e\in V$, let
+$\iota(e)\in[s]$, and let $z_e\in\Q_{\ge0}$ for each $e\in\mathcal E$.
+Suppose
+\begin{equation}\label{eq:rounding-hypotheses}
+ \sum_{e:w\in B(c_e,R_{\iota(e)})}z_e\ge1\quad(w\in U),
+ \qquad
+ \sum_e\frac{z_e}{a_{\iota(e)}}\le1.
+\end{equation}
+There is a deterministic polynomial-time cover of $U$ by balls
+$B(u,2R_j)$, with at most $a_i$ chosen balls having type $j\le i$,
+simultaneously for every $i\in[s]$.
+\end{lemma}
+\begin{proof}
+Merge consecutive types having the same capacity into their largest
+radius, keeping each center and mass. This preserves the weighted sum
+and can only increase coverage. We may assume that the capacities
+strictly increase. Put $a_0=0$.
+
+Maintain the uncovered client set, still denoted by $U$, and delete
+fractional balls with empty intersection with $U$. In phase $j$, choose
+at most $a_j-a_{j-1}$ centers. Choose $u\in U$ maximizing
+\begin{equation}\label{eq:maximum-release}
+ \sum_{\substack{e\text{ remaining}\\\iota(e)\ge j}}
+ \frac{z_e}{a_{\iota(e)}}
+ \ind_{B(c_e,R_{\iota(e)})\cap U\subseteq B(u,2R_j)}.
+\end{equation}
+Choose $B(u,2R_j)$, remove its clients from $U$, and delete all fractional
+balls counted in~\eqref{eq:maximum-release}. At the end of phase $j$,
+discard type $j$. Stop if $U$ becomes empty. The displayed weights are
+kept fixed; only the remaining balls and clients change.
+
+We prove coverage by induction on $s$. In the first phase, define
+\[
+ \Phi(w)=\sum_{e:\iota(e)>1,\ w\in B(c_e,R_{\iota(e)})}
+             (1-a_1/a_{\iota(e)})z_e.
+\]
+Every remaining ball containing $w$ lies in $B(w,2R_1)$, and its
+weighted mass is at least $(1-\Phi(w))/a_1$ by
+\eqref{eq:rounding-hypotheses}. Therefore a maximum in
+\eqref{eq:maximum-release} deletes at least
+$(1-\min_{w\in U}\Phi(w))/a_1$ weighted mass.
+Deleted fractional balls contain no surviving client. Thus $\Phi(w)$
+does not change for a client that survives a deletion.
+
+Suppose clients remain after $a_1$ choices and let $\zeta$ be their
+minimum value of $\Phi$. At each choice the then-current minimum was
+at most $\zeta$. Remaining weighted mass is at most
+$1-a_1(1-\zeta)/a_1=\zeta$. If $\zeta=0$, this contradicts retained
+fractional coverage. Otherwise discard type one and set
+\[
+ z'_e=\frac{a_{\iota(e)}-a_1}{a_{\iota(e)}\zeta}z_e,
+ \qquad a'_i=a_i-a_1\quad(i>1).
+\]
+New coverage is $\Phi(w)/\zeta\ge1$, and new weighted mass is at most
+one. The induction hypothesis applies. Moreover
+$z'_e/a'_{\iota(e)}=(z_e/a_{\iota(e)})/\zeta$, so its
+maximum-release choices agree with the stated algorithm. The phase
+quotas give every cumulative bound.
+Each choice removes its chosen client, so at most $|U|$ choices are
+made. All tests and rational sums are polynomial-time computations.
+\end{proof}
+
+The rule also counts fractional balls that do not contain the chosen
+center. In particular, if $B(v,r)$ meets $B(u,R)$ and $r\le R/2$, then
+$d_G(u,v)\le R+r$ and $B(v,r)\subseteq B(u,2R)$.
+Thus any number of such balls can be deleted in one radius-$2R$ choice.
+More generally, let $m\ge0$ be an integer, let $R,s\ge0$, let $u\in V$, and let
+$\{B(v_j,r_j):j\in[m]\}$ be a finite family with $0\le r_j\le s$
+and $B(v_j,r_j)\cap B(u,R)\ne\varnothing$ for every $j$.
+For each $j$, the triangle inequality gives
+$B(v_j,r_j)\subseteq B(u,R+2s)$.
+Consequently one ball of radius $R+2s$ covers $B(u,R)$ and all balls
+in this family, regardless of $m$.
+
+\section{A fractional cover and independent proposals}\label{sec:proposals}
+
+Fix an integer guess $k\in[n]$. The upper-bound construction uses the
+following rational constants:
+\begin{equation}\label{eq:profile}
+\begin{gathered}
+ a=\frac{5607}{50000},\qquad A_0=\frac{55101}{100000},\qquad
+ c_0=0,\quad c_1=\frac{5331}{25000},\quad
+ c_2=\frac{64319}{100000},\quad c_3=1+a,\\
+ p_1=p_3=\frac{33791}{25000},\qquad
+ p_2=\frac{23511}{25000},\qquad p_{\max}=p_1.
+\end{gathered}
+\end{equation}
+Define a finite measure $\mu$ on $\R_{\ge0}$ by the integration rule
+\begin{equation}\label{eq:measure}
+ \int f(h)\,d\mu(h)
+ = A_0 f(0)+\sum_{j=1}^3p_j\int_{c_{j-1}}^{c_j}f(h)\,dh.
+\end{equation}
+The rule is used for the bounded piecewise continuous functions appearing
+below. A positive mass assigned to a single point is called an atom at
+that point. The measure $\mu$ has an atom of mass $A_0$ at zero, and
+no other point has positive mass.
+Its total mass, its cumulative function, and its strict tail are
+\begin{align}
+ W&=A_0+\sum_{j=1}^3p_j(c_j-c_{j-1})
+    =\frac{2346784337}{1250000000},\label{eq:mass}\\
+ F(h)&=A_0+\sum_{j=1}^3p_j[h-c_{j-1}]_0^{c_j-c_{j-1}}
+       \quad(h\ge0),\label{eq:cdf}\\
+ D(h)&=W-F(h)=\mu((h,+\infty))\quad(h\ge0).\label{eq:tail}
+\end{align}
+In particular, $W<2$, $A_0+p_{\max}<2$, $A_0<W/2$, and $p_{\max}<2$.
+Set
+\begin{equation}\label{eq:horizons}
+ q=\lceil ak\rceil,\qquad H=k+q,\qquad L_0=2k+q,\qquad \cL=L_0+1,
+ \qquad r_i=k-i\quad(i\in[k]).
+\end{equation}
+
+\subsection{The fractional cover}
+
+For $(v,i)\in V\times[k]$, call $A_{v,i}=B(v,r_i)$ the original ball
+with center $v$ and type $i$, and introduce a variable $x_{v,i}\ge0$.
+For a ball $P\subseteq V$, put
+\[
+ T_x(P)=\sum_{v,i:A_{v,i}\cap P\ne\varnothing}x_{v,i},\qquad
+ C_x(P)=\sum_{v,i:P\subseteq A_{v,i}}x_{v,i}.
+\]
+The linear feasibility problem is
+\begin{align}
+ \sum_{v\in V}x_{v,i}&=1 &&(i\in[k]),\label{eq:lp-type}\\
+ \sum_{v,i:w\in A_{v,i}}x_{v,i}&\ge1 &&(w\in V),\label{eq:lp-cover}\\
+ T_x(B(w,t))+C_x(B(w,t))&\ge2
+       &&(w\in V, t\in\Z_{\ge0}, t\le L_0).
+       \label{eq:lp-probe}
+\end{align}
+The balls in~\eqref{eq:lp-probe} are called probes.
+A feasible solution of this system is called a fractional cover.
+
+\begin{lemma}\label{lem:lp-validity}
+If $b(G)\le k$, then~\eqref{eq:lp-type}--\eqref{eq:lp-probe} is
+feasible. The feasibility problem has $nk$ variables, $O(nk)$
+constraints, and a polynomial-time exact rational solution procedure.
+\end{lemma}
+\begin{proof}
+Pad a covering sequence of length at most $k$ to length $k$, increasing
+the earlier radii accordingly, and use its zero-one values for $x$.
+For each probe $P$, either some chosen ball contains $P$, contributing
+two to $T_x(P)+C_x(P)$, or at least two chosen balls meet $P$. These are
+the only possibilities because the chosen balls cover $P$.
+The constraints follow.
+All ball intersections and inclusions are computable from graph distances.
+Every coefficient is zero, one, or two. Exact rational feasibility of a
+linear system with rational coefficients is solvable in polynomial time
+in its encoding length~\cite{Khachiyan}; a feasible rational point of
+polynomial encoding length can be returned.
+\end{proof}
+
+\subsection{Proposal labels and trials}
+
+For $h\in\{0,\ldots,H\}$ define
+\begin{equation}\label{eq:discrete-masses}
+ \omega_0=A_0,\qquad
+ \omega_h=\mu(((h-1)/k,h/k])\quad(1\le h\le H).
+\end{equation}
+Since $H/k\ge c_3$, these masses sum to $W$.
+For a feasible $x$, a proposal label is a triple $p=(v,i,h)$ with
+$\omega_hx_{v,i}>0$. Write $\mathcal P$ for the finite set of these labels.
+Define its mass, raw ball, proposal ball, and raw
+deadline by
+\begin{equation}\label{eq:proposal-label}
+ \lambda_p=\omega_hx_{v,i},\qquad
+ A_p^0=B(v,r_i+h),\qquad A_p=B(v,r_i+h+1),\qquad
+ t_p=H+i-h.
+\end{equation}
+Thus $t_p\in[L_0]$, the raw radius is $L_0-t_p$, and the proposal
+radius is $\cL-t_p\le L_0$.
+
+Put $N_0=10^{12}$ and $\delta=3/N_0$. For every $t\in[L_0]$, create
+$N_0$ trials, each choosing label $p$ with probability $\lambda_p/N_0$
+for each $p$ with $t_p=t$, and otherwise choosing a null outcome denoted
+by $\bot$. All trials are independent. A label chosen by a trial is a
+selected proposal. The intensity of a family of labels is the sum of
+their masses; it is also the sum, over all trials, of their selection
+probabilities.
+
+The probabilities are well-defined. Indeed, with
+$\rho_t=\sum_{p:t_p=t}\lambda_p$, at most one value of $i$ contributes
+$\omega_0$, and every other $\omega_h$ is at most $p_{\max}/k$.
+Using~\eqref{eq:lp-type} gives
+\begin{equation}\label{eq:trial-bounds}
+ \rho_t\le A_0+p_{\max}<2,\qquad
+ \Prob(\text{a given trial is nonnull})\le\delta<\tfrac12,
+ \qquad \sum_p\lambda_p=Wk<2k.
+\end{equation}
+
+A proposal is proper if $A_p$ is a proper subset of its connected
+component. A proposal is a component proposal if $A_p$ is the whole
+component $C$. For every component $C$, fix a center
+$\kappa(C)\in\argmin_{v\in C}\ecc_C(v)$, resolving equal values by the
+vertex ordering, and put $c(C)=\rad(C)$.
+A component proposal is represented by $B(\kappa(C),c(C))$ and given
+deadline $\cL-c(C)$. A proper proposal keeps its raw deadline.
+Write $d_p$ for the resulting deadline and call $\cL-d_p$ its
+advertised radius. This representation of a
+component proposal preserves its set and satisfies $d_p\ge t_p$.
+
+Two proposal labels belong to the same equality class if their proposal
+balls are equal as vertex sets. A selected proposal set is
+inclusion-maximal if no selected proposal set strictly contains it.
+Retain one proposal from each inclusion-maximal selected proposal set. Among
+selected proposals with the same set, prefer the largest $d_p$, then use
+a fixed total order of their trial and label indices. This makes the
+retained proposals uniquely determined. For $j\in[\cL]$, let $T_j$ be
+the number of retained proposals whose deadline is at most $j$.
+We will also use distributions obtained by replacing specified label
+outcomes by $\bot$; their remaining trials stay independent.
+
+\subsection{An intensity bound from the probes}
+
+For $r\ge0$, define
+\begin{equation}\label{eq:g-definition}
+ g(r)=\min\left\{W,
+  2W-\max_{0\le t\le r}\bigl(F(r-t)+F(r+t)\bigr)\right\}.
+\end{equation}
+This function is nonnegative, nonincreasing, continuous, and piecewise
+affine. It has Lipschitz constant at most $2p_{\max}$, meaning that
+$|g(r)-g(r')|\le2p_{\max}|r-r'|$. Also $g(r)=0$ for $r\ge c_3$ and
+$g(0)=W$. To verify these properties and to evaluate $g$ exactly, use
+\begin{equation}\label{eq:g-finite}
+ \max_{0\le t\le r}\bigl(F(r-t)+F(r+t)\bigr)
+ =\max\left(\{2F(r)\}\cup
+ \{F(z)+F(2r-z):z\in\{c_0,c_1,c_2,c_3\},\ z\le2r\}\right).
+\end{equation}
+For completeness, the sum $F(y)+F(2r-y)$ is affine between its finitely
+many breakpoints on $[0,2r]$. Its endpoint and breakpoint values are the
+values on the right, using symmetry about $r$.
+Each active value is nondecreasing with slope at most $2p_{\max}$.
+A newly admissible breakpoint has the endpoint value when it appears.
+Taking the maximum and then the minimum in~\eqref{eq:g-definition}
+proves the asserted continuity, monotonicity, and Lipschitz bound.
+
+\begin{lemma}\label{lem:absorption}
+For every $v\in V$ and integer $0\le R\le L_0$, the raw proposals
+containing $B(v,R)$ have intensity at least $g(R/k)$.
+\end{lemma}
+\begin{proof}
+Call an original ball universal for this target if it contains $B(v,R)$,
+and let $U_0$ be the sum of its $x$ values. Each unit of universal mass
+contributes all $W$ enlargement mass to raw containment. If $U_0\ge1$,
+the conclusion follows from $g\le W$. If $U_0<1$, remove universal
+balls and divide remaining masses by $1-U_0$. Coverage of $v$ remains
+at least one. For every probe $B(v,t)$ with $t\le R$, each removed ball
+contributed twice its mass to~\eqref{eq:lp-probe}, so these probe
+inequalities remain valid after normalization. We first prove the
+conclusion for this normalized system without universal balls.
+
+Let $C\ge1$ be its mass of original balls containing $v$, called near
+balls. All other original balls are called far balls. For a near ball,
+let $\tau$ be the minimum distance from $v$ to a vertex outside the ball.
+Since the ball is not universal, $1\le\tau\le R$ and it contains
+$B(v,\tau-1)$. For any vertex of $B(v,R)$, follow a shortest path from
+$v$ for its first $\tau-1$ edges, or stop earlier at the vertex itself.
+It follows that enlargement $R-\tau+1$ suffices to contain $B(v,R)$.
+A far ball meeting $B(v,\tau)$ contains the target after enlargement
+$R+\tau$, by the triangle inequality.
+
+For integer $t\in[0,R]$, let $Q(t)$ be near mass with exit distance
+greater than $t$, and let $N(t)$ be far mass meeting $B(v,t)$. The probe
+inequality reads
+\begin{equation}\label{eq:near-far}
+ C+Q(t)+N(t)\ge2.
+\end{equation}
+Every near ball contains the target after any enlargement strictly
+greater than $R$. From~\eqref{eq:g-definition} with $t=0$,
+\begin{equation}\label{eq:near-tail}
+ W-F(R/k)\ge\tfrac12g(R/k).
+\end{equation}
+If $C\ge2$, two units of near mass suffice by~\eqref{eq:near-tail}.
+
+Suppose $1\le C<2$. Select near mass $2-C$ with the largest exit
+distances, allowing a partial mass at a boundary value. Its mass with
+exit distance at most $t$ is
+$\max\{0,2-C-Q(t)\}\le N(t)$ by~\eqref{eq:near-far}.
+Match this selected near mass to far mass, requiring that a near ball
+with exit distance $\tau$ is matched only to a far ball meeting
+$B(v,\tau)$. Such a fractional matching exists: process exit distances
+in increasing order and use previously unused eligible far mass.
+Eligibility sets are nested, and the preceding cumulative inequality
+ensures enough eligible mass at every step.
+
+For each matched unit, the two raw containment contributions are at least
+\begin{equation}\label{eq:paired-tails}
+ \mu(((R-\tau)/k,+\infty))+
+ \mu(((R+\tau)/k,+\infty))\ge g(R/k).
+\end{equation}
+Strictness of the tails and upward rounding in
+\eqref{eq:discrete-masses} ensure the integer enlargements stated above.
+The matched mass contributes $(2-C)g(R/k)$.
+Remaining near mass is $2(C-1)$ and contributes at least
+$(C-1)g(R/k)$ by~\eqref{eq:near-tail}. These contributions total $g(R/k)$.
+Restoring the universal mass gives at least
+$U_0W+(1-U_0)g(R/k)\ge g(R/k)$.
+When $R=0$, every original ball covering $v$ is universal, so the first
+case applies directly.
+\end{proof}
+
+\begin{lemma}\label{lem:strict-growth}
+If a target ball $A=B(v,R)$ is proper in its component and $R\le L_0$,
+the proposal balls strictly containing $A$ have intensity at least
+$g(R/k)$.
+\end{lemma}
+\begin{proof}
+For $S\subseteq V$, define its closed neighborhood by
+$N[S]=\{w\in V:d_G(w,S)\le1\}$, where
+$d_G(w,S)=\min_{z\in S}d_G(w,z)$ and $\min\varnothing=+\infty$.
+Graph balls satisfy $N[B(u,r)]=B(u,r+1)$ for integer $r\ge0$.
+Thus every raw ball containing $A$ gives a proposal ball containing
+$N[A]$. A nonempty proper subset of a connected component has an edge
+to its complement, so $A\subsetneq N[A]$.
+Apply Lemma~\ref{lem:absorption}.
+\end{proof}
+
+\subsection{Bounds for expected counts}
+
+Define for $z\ge0$ and $r\ge0$
+\begin{equation}\label{eq:phi-q}
+ \phi(z)=\int_0^1e^{-tz}\,dt
+ =\begin{cases}(1-e^{-z})/z,&z>0,\\1,&z=0,\end{cases}
+ \qquad q_P(r)=e^{-g(r)}.
+\end{equation}
+The subscript $P$ in $q_P$ is a fixed label for proper proposals.
+The function $\phi$ is nonincreasing, $e^{-z}\le\phi(z)\le1$, and
+$|\phi'(z)|\le1/2$. In particular, $q_P$ and $\phi\circ g$ are
+nondecreasing, their Lipschitz constants are at most $2p_{\max}$ and
+$p_{\max}$, and $q_P(r)\le\phi(g(r))$.
+
+\begin{lemma}\label{lem:count-bounds}
+Before any deletion of label outcomes, the expected number of retained
+proper proposals of deadline at most $j$ is at most
+\begin{equation}\label{eq:proper-count}
+ e^\delta\sum_{\substack{p\text{ proper}\\d_p\le j}}
+         \lambda_pq_P((\cL-t_p)/k).
+\end{equation}
+For a component $C$, let $\lambda_C$ be the intensity of component
+proposals with set $C$. The probability that its component proposal is
+retained is at most
+\begin{equation}\label{eq:component-count}
+ e^\delta\lambda_C\phi(g(c(C)/k)).
+\end{equation}
+The same conclusions hold after deleting labels if no containing label
+of a remaining target has been deleted; components entirely deleted
+can be omitted.
+\end{lemma}
+\begin{proof}
+Consider an equality class of proper proposal sets, with strict-superset
+intensity $\lambda_s$. If this class is retained by $j$, some outcome
+in the class with deadline at most $j$ is selected and every strict
+superset is avoided. Conditional on selecting that outcome in its trial,
+independence of the other trials bounds the avoidance probability by
+$e^{-\lambda_s+\delta}$. The omitted trial has strict-superset
+probability at most $\delta$. For each representation of the class,
+Lemma~\ref{lem:strict-growth} gives
+$\lambda_s\ge g((\cL-t_p)/k)$. A union bound over the eligible selected
+outcomes, followed by summing over equality classes, proves
+\eqref{eq:proper-count}.
+
+For a component, write $s_\xi$ for its selection probability in trial
+$\xi$, so $\sum_\xi s_\xi=\lambda_C$ and $s_\xi\le\delta$.
+Its probability of at least one selection is
+\[
+ 1-\prod_\xi(1-s_\xi)
+ =\int_0^1\sum_\xi s_\xi\prod_{\zeta\ne\xi}(1-t s_\zeta)\,dt
+ \le e^\delta\lambda_C\phi(\lambda_C).
+\]
+If $c(C)\le L_0$, Lemma~\ref{lem:absorption} at $\kappa(C)$ gives
+$\lambda_C\ge g(c(C)/k)$. If $c(C)>L_0$, no component proposal exists
+and $g(c(C)/k)=0$. Monotonicity of $\phi$ proves
+\eqref{eq:component-count}. The deletion assertion follows because the
+same required intensities remain available.
+\end{proof}
+
+
+
+\section{Analytic bounds and the numerical inequality}\label{sec:analytic}
+
+For a radius parameter $r\ge0$, let $\nu_r$ be the translate of $\mu$ by $r$:
+$\int f(x)\,d\nu_r(x)=\int f(r+h)\,d\mu(h)$.
+Define the finite measure $\Lambda$ by
+\begin{equation}\label{eq:aggregate-measure}
+ \int f(x)\,d\Lambda(x)=\int_0^1\int f(x)\,d\nu_r(x)\,dr.
+\end{equation}
+It has total mass $W$, assigns zero mass outside $[0,1+c_3]$, and has a density
+\begin{equation}\label{eq:aggregate-density}
+ f_\Lambda(x)=A_0\ind_{x\in[0,1]}
+ +\sum_{j=1}^3p_j
+   \pos{\min\{1,x-c_{j-1}\}-\max\{0,x-c_j\}}.
+\end{equation}
+A density is a nonnegative function whose integral over each interval
+equals its $\Lambda$ measure. Its values at the finitely many endpoints
+do not affect the integral. Integrating the translated atom and the
+translated density intervals in~\eqref{eq:aggregate-measure}
+proves~\eqref{eq:aggregate-density}.
+In particular, $f_\Lambda\le A_0+p_{\max}<2$.
+
+For $e\ge\theta\ge0$, define
+\begin{equation}\label{eq:reward}
+ \Phi_{\theta,e}(x)=
+ \begin{cases}
+  0,&x<\theta,\\
+  q_P(x),&\theta\le x<e,\\
+  \phi(g(e)),&x\ge e.
+ \end{cases}
+\end{equation}
+Call $e$ the cut value of this function. Define
+\begin{align}
+ K(r,\theta)&=\sup_{e\ge\theta}\int\Phi_{\theta,e}(x)\,d\nu_r(x),
+       &M_N(\theta)&=\int_0^1K(r,\theta)\,dr,\label{eq:new-envelope}\\
+ M_O(\theta)&=\int_{[\theta,+\infty)}e^{-D(x)}\,d\Lambda(x),
+       &M(\theta)&=\min\{M_N(\theta),M_O(\theta)\}.
+       \label{eq:old-envelope}
+\end{align}
+The subscripts are fixed names for the two bounds, not parameters.
+
+\begin{lemma}\label{lem:kernel-properties}
+For fixed $\theta$, $K(r,\theta)$ is nondecreasing in $r$ and lies in
+$[0,W]$. For $0\le\theta'\le\theta$,
+\begin{equation}\label{eq:kernel-threshold}
+ 0\le K(r,\theta')-K(r,\theta)
+       \le\nu_r([\theta',\theta)).
+\end{equation}
+Each of $M_N,M_O,M$ is nonincreasing, takes values in $[0,W]$, and
+satisfies
+\begin{equation}\label{eq:envelope-increment}
+ 0\le M_*(\theta')-M_*(\theta)
+       \le\Lambda([\theta',\theta))\le2(\theta-\theta'),
+ \qquad M_*\in\{M_N,M_O,M\}.
+\end{equation}
+\end{lemma}
+\begin{proof}
+The function in~\eqref{eq:reward} is nondecreasing in $x$ and lies in
+$[0,1]$: for $x<e$, $q_P(x)\le\phi(g(x))\le\phi(g(e))$.
+Translation of $\nu_r$ proves monotonicity in $r$ and the bound $W$.
+For~\eqref{eq:kernel-threshold}, a cut $e\ge\theta$ loses at most the
+mass of $[\theta',\theta)$ when the threshold increases. If instead
+$\theta'\le e<\theta$, replace $e$ by $\theta$. This can only increase
+the reward on $[\theta,+\infty)$, and again the lost reward is at most
+the indicated interval mass. Taking suprema proves the assertion.
+Integrating in $r$ proves it for $M_N$. For $M_O$ it follows because
+$0\le e^{-D}\le1$. The minimum of two nonincreasing functions with the
+same increment bound has that increment bound. The density bound then
+proves the last inequality.
+\end{proof}
+
+For $s\in[0,2]$, put
+\begin{equation}\label{eq:analytic-capacity}
+ A(s)=\min_{s\le t\le2}\{a+t-M(2-t)\}.
+\end{equation}
+The minimum exists by~\eqref{eq:envelope-increment}, and $A$ is
+nondecreasing. When $A>0$, define
+\begin{equation}\label{eq:integral-J}
+ J=\frac12\int_0^2\frac{e^{-g(1-s/2)}}{A(s)}\,ds.
+\end{equation}
+Its integrand is nonincreasing: the numerator is nonincreasing in $s$
+and the denominator is positive and nondecreasing.
+
+\begin{lemma}[Exact numerical inequality]\label{lem:numerical}
+For the constants in~\eqref{eq:profile},
+\begin{align}
+ A(s)&\ge\frac{54337893542773910}{524288000000000000}
+           >\frac1{10} &&(0\le s\le2),\label{eq:cert-capacity}\\
+ J&\le\frac{65533759887597263}{65536000000000000}
+       =0.9999658185973703460693359375
+       <\frac{999999}{1000000}.\label{eq:cert-J}
+\end{align}
+\end{lemma}
+\begin{proof}
+Appendix~\ref{app:certificate} gives finite rational upper and lower
+bounds for the defining integrals, the supremum in $K$, and the minimum
+in $A$. It proves the direction of every bound and specifies the integer
+evaluation of those bounds. With $65536$ intervals for the radius parameter, $65536$ cut
+intervals, and $524288$ primitive intervals per unit, the evaluated
+lower numerator for the uniform capacity is $54337893542773910$ with
+denominator $524288000000000000$. The evaluated upper numerator for
+$J$ is $131067519775194526$ with denominator $131072000000000000$.
+Reduction of the latter fraction gives~\eqref{eq:cert-J}.
+The complete programs performing this finite calculation, including
+the rational profile, are part of this LaTeX source and are displayed
+in that appendix.
+\end{proof}
+
+\section{Deterministic rounding of the proposals}\label{sec:rounding}
+
+Throughout this section fix a rational $\varepsilon\in(0,1]$, and put
+\begin{equation}\label{eq:tolerance}
+ \sigma=\min\{10^{-7},\varepsilon/16\},\qquad
+ K_0=\max\{10^{12},\lceil16/\varepsilon\rceil\}.
+\end{equation}
+We will specify which guesses use the construction of this section.
+
+\subsection{Geometric grouping and guards}
+
+Partition the integer radii $0,\ldots,\cL-1$ into a singleton group for
+zero and the nonempty groups induced by
+$[(1+\sigma)^h,(1+\sigma)^{h+1})$, for integers $h\ge0$.
+An advertised radius $R$ corresponds to deadline $\cL-R$.
+For each induced group of deadlines keep its largest deadline, even if
+no positive-mass proposal has a deadline in the group. Let
+$\mathcal J\subseteq[\cL]$ be this set of endpoints and
+$\ell=|\mathcal J|$. In particular $\cL\in\mathcal J$.
+For $j\in[\cL]$, let $j^+$ be the smallest endpoint at least $j$.
+The width of every group gives
+\begin{equation}\label{eq:group-width}
+ 0\le j^+-j\le w,\qquad w=\lceil\sigma\cL\rceil+2,
+ \qquad \ell=O_\sigma(\log(n+1)).
+\end{equation}
+For the last bound, $\cL<3n$ whenever $k\ge K_0$; the finitely many
+smaller guesses will use Theorem~\ref{thm:fpt}.
+
+Put
+\begin{equation}\label{eq:guard-eta}
+ \eta=\frac{\sigma^2}{10^8\ell}.
+\end{equation}
+For a candidate proposal ball $A_p$, its containment downset is the
+set of currently undeleted labels $q$ with $A_q\subseteq A_p$.
+If any containment downset has intensity at least $\eta k$, record its
+candidate ball as a guard and delete all labels in that downset.
+Repeat until every candidate has downset intensity less than $\eta k$.
+Write $\mathcal G$ for the list of guard balls and
+$N_{\mathrm g}=|\mathcal G|$.
+
+\begin{lemma}\label{lem:guards}
+This procedure is polynomial-time and
+\begin{equation}\label{eq:guard-count}
+ N_{\mathrm g}<2/\eta.
+\end{equation}
+If a target set is not contained in a guard, none of its containing
+proposal labels has been deleted. If a component proposal is deleted,
+its whole component is contained in a guard.
+\end{lemma}
+\begin{proof}
+Each iteration deletes at least $\eta k$ intensity, and disjoint deleted
+families have total intensity at most $Wk<2k$. This proves the bound.
+The number of iterations is also at most the number of labels, since
+each iteration deletes a positive-mass label. Containments and sums
+are polynomial-time computations. If a deleted proposal contains a
+target, its guard contains that target. The component assertion is its
+special case.
+\end{proof}
+
+Replace every deleted label outcome by $\bot$ in every trial. The
+remaining trials are independent and obey~\eqref{eq:trial-bounds}.
+For remaining candidates and for original balls not contained in guards,
+Lemmas~\ref{lem:absorption}--\ref{lem:count-bounds} remain valid by
+Lemma~\ref{lem:guards}.
+All definitions of $T_j$ below refer to this modified distribution.
+
+\subsection{Variance of a deadline count}
+
+Expectations in this subsection refer to the independent trials after
+guard deletion. Conditional expectations fix specified trial values
+and average over the remaining trial values.
+
+\begin{lemma}\label{lem:deletion-variance}
+Let $X_1,\ldots,X_N$ be independent finite-valued random variables,
+each with a designated null value. For a real function $Z$ of these
+variables, let $Z^{(-t)}$ be obtained by replacing $X_t$ by its null
+value. Then
+\[
+ \Var Z\le\sum_{t=1}^N\E(Z-Z^{(-t)})^2.
+\]
+\end{lemma}
+\begin{proof}
+Put $Y_t=\E[Z\mid X_1,\ldots,X_t]$, with $Y_0=\E Z$.
+Successive differences are orthogonal: for $s<t$, conditioning on
+$X_1,\ldots,X_{t-1}$ gives
+$\E[(Y_s-Y_{s-1})(Y_t-Y_{t-1})]=0$.
+Hence $\Var Z=\sum_t\E(Y_t-Y_{t-1})^2$.
+Let $\E_tZ$ denote integration over $X_t$ with all other coordinates
+fixed. Independence gives
+$Y_t-Y_{t-1}=\E[Z-\E_tZ\mid X_1,\ldots,X_t]$.
+For real numbers $y_i$ and nonnegative weights $p_i$ summing to one,
+$(\sum_i p_iy_i)^2\le\sum_i p_iy_i^2$. Applying this inequality
+to the conditional average bounds its squared expectation by
+$\E(Z-\E_tZ)^2$.
+For fixed other coordinates the mean minimizes squared error, so this
+quantity is at most $\E(Z-Z^{(-t)})^2$. Sum over $t$.
+\end{proof}
+
+\begin{lemma}\label{lem:count-variance}
+After deletion of the guard downsets, for every $j\in[\cL]$,
+\begin{equation}\label{eq:count-variance}
+ \Var T_j\le6k+4\eta k^2.
+\end{equation}
+\end{lemma}
+\begin{proof}
+Treat each possible nonnull outcome as a pair consisting of a trial and
+a label. Order these outcomes by strict set inclusion; order equal sets
+by the deadline and the fixed tie order. This is a strict partial order.
+Its maximal selected outcomes are exactly the retained proposals.
+An outcome above another in this order is called its dominator.
+
+Let $N$ be the number of selected outcomes. Deleting a selected
+nonmaximal outcome does not change any maximal outcome. If deleting a
+maximal outcome $e$ creates $a_e$ new maximal outcomes, each created
+outcome had $e$ as its unique selected dominator. Set $a_e=0$ for every
+possible outcome that is not selected and maximal; sums over $e$ below
+range over all possible nonnull outcomes. These created-outcome
+sets are disjoint for different $e$, and consequently
+\begin{equation}\label{eq:exposure-disjoint}
+ \sum_e a_e\le N.
+\end{equation}
+The squared change in a prefix count is at most $1+a_e^2$.
+
+Call $(e,f)$ an exposed pair if $f$ becomes maximal on deleting $e$.
+Fix such a pair of positive probability.
+The event defining this pair specifies that $e$ and $f$ are selected in
+distinct trials and that every other trial avoids the dominators of
+$f$. Transitivity also makes $e$ maximal in this event.
+This conditioning is separate for each other trial. Its avoidance
+probability is at least $1-\delta$, so the probability of any allowed
+nonnull outcome increases by at most $(1-\delta)^{-1}\le2$.
+Every outcome exposed by deleting $e$ is in the containment downset of
+$e$. Its unconditioned intensity is less than $\eta k$.
+The two fixed trials and the remaining trials therefore give
+\[
+ \E[a_e\mid(e,f)\text{ is an exposed pair}]\le2+2\eta k.
+\]
+Writing $a_e^2$ as the sum of $a_e$ over its exposed outcomes yields
+\[
+ \E\sum_ea_e^2\le(2+2\eta k)\E\sum_ea_e
+                    \le(2+2\eta k)\E N.
+\]
+Lemma~\ref{lem:deletion-variance} now gives
+\[
+ \Var T_j\le\E N+\E\sum_e a_e^2.
+\]
+Since
+$\E N\le Wk<2k$, the result is
+$(3+2\eta k)\E N\le6k+4\eta k^2$.
+\end{proof}
+
+\subsection{Discrete expected counts}
+
+Put $\mu_j=\E T_j$. These expectations depend on the modified trial
+distribution after guards. For $j\in[\cL]$ put
+$\theta_j=\max\{0,(L_0-j)/k\}$.
+
+\begin{lemma}\label{lem:discrete-means}
+For every $q\le j\le\cL$,
+\begin{equation}\label{eq:discrete-mean-bound}
+ \mu_j\le kM(\theta_j)+100+100k/N_0.
+\end{equation}
+For $k\ge10^{12}$ and $1\le j<q$,
+\begin{equation}\label{eq:early-mean}
+ \mu_j\le\frac{p_{\max}j(j+1)}{2k}\le j.
+\end{equation}
+\end{lemma}
+\begin{proof}
+First use the threshold $\theta=(\cL-j)/k\ge0$.
+For a center $v$ in a component $C$, put
+$e_v=\ecc_C(v)/k$. For a label $p=(v,i,h)$, put
+$x=(r_i+h+1)/k$, its normalized proposal radius. Its proposal is proper
+exactly when $x<e_v$.
+If this proper proposal is counted by $j$, then $x\ge\theta$ and
+the coefficient of its mass in~\eqref{eq:proper-count} is
+$e^\delta q_P(x)$.
+If its component proposal is counted by $j$, then
+$c(C)/k\ge\theta$ and $e_v\ge\theta$. Since $c(C)/k\le e_v$,
+the coefficient of its mass in~\eqref{eq:component-count} is at most
+$e^\delta\phi(g(e_v))$. If $e_v<\theta$, proposals centered at $v$
+contribute no count by $j$. Otherwise, the function
+$e^\delta\Phi_{\theta,e_v}$ bounds the coefficients in the two
+expected-count bounds, including a zero coefficient when a proposal
+is not counted by $j$.
+
+For $h>0$ in the continuous enlargement measure, upward discretization
+replaces $h$ by $\lceil kh\rceil/k$; for the atom at zero it leaves
+$h=0$. In both cases, the normalized proposal radius is at most
+$r_i/k+h+2/k$. Monotonicity of $\Phi$ in its radius argument,
+followed by the definition of $K$ and~\eqref{eq:lp-type}, gives
+\[
+ \mu_j\le e^\delta\sum_{i=1}^k K((k-i+2)/k,\theta).
+\]
+For any nondecreasing function $f:[0,1]\to[0,W]$, its right Riemann
+sum satisfies
+\[
+ \sum_{i=1}^kf(i/k)\le k\int_0^1f(r)\,dr+W.
+\]
+Apply this inequality with $f(r)=K(r,\theta)$. Replacing the first
+summand $K(1/k,\theta)$ by $K(1+1/k,\theta)\le W$ adds at most $W$.
+It follows that
+\begin{equation}\label{eq:new-discrete-bound}
+ \mu_j\le e^\delta\{kM_N(\theta)+2W\}
+           \le kM_N(\theta_j)+100+100k/N_0.
+\end{equation}
+Here $\theta\ge\theta_j$, $W<2$, $M_N\le W$, and
+$e^\delta\le1+6/N_0$ have been used. This proof also applies when
+$j=\cL$ and $e_v=0$.
+
+For a second bound, map each retained set to a selected outcome with
+that set and minimum raw deadline. Its raw deadline is at most its
+retained deadline, so a set counted
+by $j$ is mapped to a raw radius at least $k\theta_j$.
+For a raw ball $B(v,S)$, every original ball covering $v$ and enlarged
+by more than $S$ gives a containing raw ball with a strictly earlier raw
+deadline. Its proposal ball also contains $B(v,S+1)$.
+Such earlier outcomes have intensity at least $D(S/k)$ by
+\eqref{eq:lp-cover}. A selected earlier containing set would either
+contradict maximality or contradict the minimum raw deadline.
+All these outcomes are in earlier trials, so independence bounds the
+probability of such an outcome being selected and eligible for this map
+by its selection probability times $e^{-D(S/k)}$. Different retained
+sets map to different outcomes, so summing bounds $\mu_j$. Guard deletion preserves the required earlier outcomes
+by Lemma~\ref{lem:guards}.
+
+Define a finite measure $\Lambda_k$ by
+\[
+ \int f(x)\,d\Lambda_k(x)
+ =\frac1k\sum_{i=1}^k\sum_{h=0}^H
+       \omega_h f((r_i+h)/k).
+\]
+This is the total measure of normalized raw radii, divided by $k$;
+the equality follows from~\eqref{eq:lp-type}.
+For each $i$, compare $r_i/k+\lceil kh\rceil/k$ with $r+h$ for
+$r\in[r_i/k,(r_i+1)/k]$ and $h\ge0$.
+The difference in absolute value is at most $1/k$, including $h=0$.
+Integrate this comparison in $r$ and with respect to $\mu(h)$.
+Since $\Lambda$ has density less than two, it gives
+\[
+ \Lambda_k([x,+\infty))\le\Lambda([x,+\infty))+2/k
+ \quad\text{for every }x\ge0.
+\]
+The function $x\mapsto\ind_{x\ge\theta_j}e^{-D(x)}$ is nondecreasing,
+with values in $[0,1]$. Integrating its increments against the preceding
+tail inequality gives
+\begin{equation}\label{eq:old-discrete-bound}
+ \mu_j\le kM_O(\theta_j)+2.
+\end{equation}
+This increment integration follows first for nondecreasing step
+functions by summing their jumps, and then for the displayed function
+by monotone step approximations.
+Taking the better of~\eqref{eq:new-discrete-bound} and
+\eqref{eq:old-discrete-bound} proves~\eqref{eq:discrete-mean-bound}.
+
+If $j<q$, a nonzero label at deadline $t\le j$ has $i\le t$ and its
+positive enlargement mass is at most $p_{\max}/k$. Thus
+$\rho_t\le p_{\max}t/k$. Retention and the representation of component
+proposals only delete outcomes or delay their deadlines, giving the first inequality
+in~\eqref{eq:early-mean}. The last one follows from $j<q$,
+$a<0.12$, $p_{\max}<2$, and $k\ge10^{12}$.
+\end{proof}
+
+
+\subsection{Capacities and a joint potential}
+
+Assume from now on that
+\begin{equation}\label{eq:large-regime}
+ k\ge K_0,\qquad k\ge\frac{10^{11}\ell}{\sigma^3}.
+\end{equation}
+For $q\le j\le L_0$, equations~\eqref{eq:analytic-capacity},
+\eqref{eq:cert-capacity}, and~\eqref{eq:discrete-mean-bound} give
+\[
+ j-\mu_j\ge(q-ak)+kA(0)-100-100k/N_0>0.
+\]
+The same calculation at $j=\cL$ has one additional position.
+Together with~\eqref{eq:early-mean}, this proves
+\begin{equation}\label{eq:means-feasible}
+ \mu_j\le j\qquad(j\in[\cL]).
+\end{equation}
+Define integers
+\begin{equation}\label{eq:U-B}
+ U_j=\lceil\mu_{j^+}+\sigma k\rceil,\qquad
+ B=w+\lceil\sigma k\rceil+2,\qquad D_i=q+2i.
+\end{equation}
+The deadline $D_i$ permits a radius-$2r_i$ repair in the base horizon,
+since $\cL-D_i=2r_i+1$. Put
+\begin{equation}\label{eq:integer-capacities}
+ a_i=\min_{D_i\le j\le\cL}(B+j-U_j)\qquad(i\in[k]).
+\end{equation}
+These are nondecreasing integers. The width bound gives
+$B+j-U_j\ge j^+-\mu_{j^+}+1$.
+For $j\ge D_i$, its endpoint satisfies
+$\theta_{j^+}\le2-2i/k$. Using~\eqref{eq:analytic-capacity} and
+\eqref{eq:discrete-mean-bound}, including the final endpoint with
+$\theta_{\cL}=0$, proves
+\begin{equation}\label{eq:capacity-lower}
+ a_i\ge kA(2i/k)-100-100k/N_0>0.
+\end{equation}
+Also~\eqref{eq:means-feasible} and~\eqref{eq:group-width} imply
+\begin{equation}\label{eq:U-feasible}
+ U_j\le B+j.
+\end{equation}
+
+For each original ball $A_{v,i}$, let $I_{v,i}$ be the indicator that it
+is not contained in a guard and is not contained in any selected
+proposal ball. If it is not contained in a guard, independence and
+Lemma~\ref{lem:absorption} bound its noncontainment probability by
+$e^{-g(r_i/k)}$. Indeed, none of its containing proposals was deleted
+by the guards. Linearity of expectation and~\eqref{eq:lp-type} give
+\begin{equation}\label{eq:residual-expectation}
+ \E\sum_{v,i}\frac{x_{v,i}I_{v,i}}{a_i}
+ \le\sum_{i=1}^k\frac{e^{-g(1-i/k)}}{a_i}
+ \le(1+2000/k+2000/N_0)J.
+\end{equation}
+Here is the last estimate in detail. From~\eqref{eq:capacity-lower}
+and $A>1/10$, the relative capacity error is at most
+$d=1000/k+1000/N_0<1/2$.
+The inequality $(1-d)^{-1}\le1+2d$ bounds the reciprocals.
+The right Riemann sum for the nonincreasing integrand in
+\eqref{eq:integral-J} is at most its integral, giving
+\eqref{eq:residual-expectation}.
+
+Consider the following nonnegative function of the trial outcomes:
+\begin{equation}\label{eq:potential}
+ \Psi=\sum_{v,i}\frac{x_{v,i}I_{v,i}}{a_i}
+        +\sum_{j\in\mathcal J}
+            \frac{(T_j-\mu_j)^2}{\sigma^2k^2}.
+\end{equation}
+All its coefficients are rational and fixed before the outcomes are
+chosen. Lemma~\ref{lem:count-variance} and
+\eqref{eq:residual-expectation} imply
+\begin{align}
+ \E\Psi
+ &\le(1+2000/k+2000/N_0)J
+            +\frac{6\ell}{\sigma^2 k}+\frac{4\ell\eta}{\sigma^2}
+            \label{eq:potential-expectation}\\
+ &<(1+4\cdot10^{-9})\frac{999999}{1000000}
+                      +6\cdot10^{-18}+4\cdot10^{-8}<1.
+ \nonumber
+\end{align}
+The second line uses~\eqref{eq:large-regime},
+\eqref{eq:tolerance},~\eqref{eq:guard-eta}, and
+Lemma~\ref{lem:numerical}.
+
+\begin{lemma}\label{lem:conditional-computation}
+The unconditional means $\mu_j$ and every conditional expectation of
+$\Psi$ obtained by fixing trial outcomes are exactly computable in
+polynomial time, with rational numbers of polynomial encoding length.
+Consequently a deterministic polynomial-time choice of outcomes
+satisfies $\Psi<1$.
+\end{lemma}
+\begin{proof}
+For an original ball not contained in a guard, noncontainment is the
+event that every trial avoids its containing labels. Its probability is
+a product of rational avoidance probabilities.
+
+For completeness, consider the partial order in the proof of
+Lemma~\ref{lem:count-variance}. Let $o=(\xi,p)$ be a possible nonnull
+outcome in trial $\xi$, and let $\pi_{\xi,p}$ be its current probability.
+Write $o'\succ o$ when $o'$ dominates $o$.
+The probability that $o$ is selected and maximal is
+\[
+ \pi_{\xi,p}\prod_{\zeta\ne\xi}
+       \left(1-\sum_{q:(\zeta,q)\succ o}\pi_{\zeta,q}\right).
+\]
+For two outcomes in different trials that are incomparable, their joint
+maximality probability is the product of their selection probabilities
+and the avoidance probabilities of the union of their dominators in
+all other trials. Comparable outcomes cannot both be maximal.
+Distinct outcomes of one trial cannot both be selected.
+These formulas compute first and second moments of each $T_j$.
+Fixed trials have point-mass distributions, so the same formulas compute
+conditional moments. In particular,
+$\E[(T_j-\mu_j)^2\mid\text{fixed outcomes}]$ follows from its conditional
+first and second moments and the fixed unconditional $\mu_j$.
+
+The number of trials is $N_0L_0$, and there are polynomially many
+possible labels per trial. Thus the numbers of products and pairs are
+polynomial. Each product has polynomially many rational factors of
+polynomial encoding length. Their products, sums, and squares also have
+polynomial encoding length. This proves the computation assertion.
+
+Fix the trials successively. At every step the current conditional
+expectation is the probability-weighted average of the conditional
+expectations after the possible next choices. Some positive-probability
+choice therefore does not increase it. Select the first such choice.
+At termination $\Psi\le\E\Psi<1$.
+\end{proof}
+
+For these deterministically selected outcomes, every term of
+\eqref{eq:potential} is less than one. In particular,
+\begin{equation}\label{eq:deterministic-guarantees}
+ \sum_{v,i}\frac{x_{v,i}I_{v,i}}{a_i}<1,\qquad
+ |T_j-\mu_j|<\sigma k\quad(j\in\mathcal J).
+\end{equation}
+Monotonicity of $T_j$ gives $T_j\le U_j$ for every integer
+$j\in[\cL]$.
+
+\subsection{Residual coverage and assignment of rounds}
+
+Let $U$ be the vertices outside the union of the guards and the retained
+proposal balls, and put $z_{v,i}=x_{v,i}I_{v,i}$. The retained proposal
+sets have the same union as all selected proposal sets: every selected
+set is contained in an inclusion-maximal selected set.
+If an original ball contains a vertex of $U$, it is not contained in a
+guard or a selected proposal. Thus
+\[
+ \sum_{v,i:w\in A_{v,i}}z_{v,i}\ge1\qquad(w\in U).
+\]
+The first inequality of~\eqref{eq:deterministic-guarantees} and
+Lemma~\ref{lem:cumulative-rounding}, with radii $r_i$ and capacities
+$a_i$, give a cover of $U$ by balls of radius $2r_i$, which we call
+repair balls of type $i$. Their numbers satisfy all the cumulative
+count bounds in that lemma.
+
+Reserve $N_{\mathrm g}$ initial rounds for the guards. In the following
+timeline, of length $B+\cL$, give each retained proposal deadline
+$B+d_p$. There are $T_j\le U_j\le B+j$ such jobs due by $B+j$, and
+there are no jobs due in $[B]$. Lemma~\ref{lem:deadlines} therefore
+places these jobs as late as possible. Its formula gives at least
+\[
+ \min_{D_i\le j\le\cL}(B+j-T_j)\ge a_i
+\]
+free positions by $B+D_i$.
+Place the repair balls in increasing type order, at the earliest free
+positions. At most $a_i$ repairs have type at most $i$, so every type-$i$
+repair is placed by $B+D_i$.
+
+The resulting horizon is
+\begin{equation}\label{eq:final-horizon}
+ L=N_{\mathrm g}+B+\cL.
+\end{equation}
+A retained proposal placed by $N_{\mathrm g}+B+d_p$ has propagation
+radius at least $\cL-d_p$, exactly its advertised radius.
+A type-$i$ repair placed by $N_{\mathrm g}+B+D_i$ has radius at least
+$2r_i+1$, which contains its radius-$2r_i$ repair ball.
+Every guard has radius at most $L_0<\cL$ and is placed in the first
+$N_{\mathrm g}$ rounds, leaving at least $B+\cL$ propagation rounds.
+The guards, retained proposals, and repairs cover $V$.
+Lemma~\ref{lem:legalization} gives a legal sequence of length at most $L$.
+
+\subsection{Running time and approximation factor}
+
+All operations for a guess satisfying~\eqref{eq:large-regime} are
+polynomial-time bit operations. Graph distances, ball sets, and
+containments have polynomial size. The fractional cover is obtained by
+Lemma~\ref{lem:lp-validity}. The number of label triples is at most
+$nk(H+1)$, and $N_0$ is an absolute constant.
+Guard deletion, grouping, the computations of
+Lemma~\ref{lem:conditional-computation}, and the rounding of
+Lemma~\ref{lem:cumulative-rounding} are polynomial-time operations.
+Geometric endpoints can be compared with integers by exact powers of
+the rational $1+\sigma$; their number and bit lengths are polynomial
+for fixed $\sigma$. No evaluations of real exponential functions are
+needed by the input-dependent algorithm: $M$, $A$, $g$, and $J$ occur
+in its analysis, while $\mu_j$, $U_j$, $a_i$, and all conditional
+expectations are computed as rational numbers.
+
+If~\eqref{eq:large-regime} fails, run Theorem~\ref{thm:fpt} instead.
+If $k<K_0$, its exponential factor is at most $4^{K_0}$, a constant
+depending only on $\varepsilon$. Otherwise
+$k<10^{11}\ell/\sigma^3=O_\varepsilon(\log(n+1))$, and
+$4^k=(n+1)^{O_\varepsilon(1)}$. Thus the fallback is polynomial-time
+for every guess where it is used.
+
+For a large-regime success, equations~\eqref{eq:U-B},
+\eqref{eq:group-width}, and~\eqref{eq:final-horizon} give
+\begin{align}
+ L&\le(2+a+(3+a)\sigma)k+8+2\sigma+N_{\mathrm g},
+       \label{eq:length-overhead}\\
+ \frac{N_{\mathrm g}}k
+ &<\frac{2\cdot10^8\ell/\sigma^2}
+          {10^{11}\ell/\sigma^3}
+   =0.002\sigma. \label{eq:guard-ratio}
+\end{align}
+The coefficient $3+a+0.002$ is less than four. Therefore
+\[
+ \frac Lk<2+a+4\sigma+\frac9k
+       \le2+a+\frac{\varepsilon}{4}+\frac{9\varepsilon}{16}
+       <2+a+\varepsilon.
+\]
+A fallback success has length at most $2k-1$ and obeys the same
+approximation bound.
+
+\begin{proof}[Proof of Theorem~\ref{thm:poly}]
+For a fixed rational $\varepsilon\in(0,1]$, test $k=1,\ldots,n$.
+Use the fallback when~\eqref{eq:large-regime} fails; otherwise solve
+the fractional-cover problem and reject an infeasible guess. At a
+feasible large-regime guess, run the construction proved above.
+By Lemma~\ref{lem:lp-validity} and Theorem~\ref{thm:fpt}, some
+construction succeeds by $k=b(G)$. Stop at the first success
+$\widehat k$, so $\widehat k\le b(G)$.
+The preceding bounds give length at most
+$(2+a+\varepsilon)b(G)$ in $n^{O_\varepsilon(1)}$ time.
+For an arbitrary real $\varepsilon>0$, use any smaller positive rational
+tolerance at most one.
+Finally, $2+a=105607/50000=2.11214$; take
+$\varepsilon=10^{-6}$ and use integrality of the returned length.
+\end{proof}
+
+
+\section{Hardness below two}\label{sec:hardness}
+
+The reduction below produces connected bipartite graphs.
+
+\begin{definition}
+A Set Cover instance consists of a nonempty finite universe
+$\mathcal U$ and an indexed family
+$\mathcal S=(S_1,\ldots,S_M)$ of nonempty subsets of $\mathcal U$ whose
+union is $\mathcal U$. Its optimum is
+\[
+ \tau(\mathcal U,\mathcal S)
+ =\min\{|J|:J\subseteq[M],\ \bigcup_{j\in J}S_j=\mathcal U\}.
+\]
+\end{definition}
+
+We use the following standard gap form of Set Cover hardness. It is the
+only external hardness theorem used in the reduction.
+
+\begin{lemma}[Set Cover gap {\cite[Corollary 1.5 and Section 6.2]{DS}}]
+\label{lem:set-cover-gap}
+For every fixed constant $\Gamma>1$, it is NP-hard to distinguish
+\[
+ \tau(\mathcal U,\mathcal S)\le k
+ \quad\text{from}\quad
+ \tau(\mathcal U,\mathcal S)>\Gamma k,
+\]
+where $1\le k\le M$.
+\end{lemma}
+The logarithmic gap supplied by the cited reduction implies every fixed
+constant gap by restricting to sufficiently large instances. Instances
+of bounded universe size can be solved by enumerating covered subsets;
+thus discarding those instances does not remove the hardness. Empty
+sets can be deleted without changing the optimum.
+
+Fix an integer $\ell\ge3$ and an instance in
+Lemma~\ref{lem:set-cover-gap} with
+\begin{equation}\label{eq:hardness-constants}
+ \Gamma=(\ell+1)(4\ell-2),\quad
+ h=2k,\quad R=\ell h,\quad
+ L_{\mathrm y}=R+h=2(\ell+1)k,\quad
+ L_{\mathrm n}=2R-h=(4\ell-2)k.
+\end{equation}
+Here $L_{\mathrm y}$ and $L_{\mathrm n}$ will be the two graph-burning
+thresholds.
+
+\subsection{The graph and its coordinate labels}
+
+Add a symbol $0$ not in $\mathcal U$. For each $e\in\mathcal U$, put
+$I_e=\{j\in[M]:e\in S_j\}$, and put $I_0=[M]$. Each $I_e$ is nonempty.
+For every $e\in\mathcal U\cup\{0\}$, introduce a new coordinate symbol
+$\star_e$. All these coordinate symbols are distinct and are not in
+$[M]$. Let $\mathbf e_\alpha$ denote the vector with one in coordinate
+$\alpha$ and zero in the other coordinates.
+
+For each $e\in\mathcal U\cup\{0\}$, form a disjoint copy of a graph
+$K_e$ with vertex set
+\begin{equation}\label{eq:simplex-vertices}
+ V(K_e)=
+ \left\{a\in\Z_{\ge0}^{\,I_e\cup\{\star_e\}}:
+                        \sum_\alpha a_\alpha=\ell\right\}.
+\end{equation}
+Distinct vertices $a,b$ are adjacent exactly when
+$b-a=\mathbf e_\alpha-\mathbf e_\beta$ for distinct coordinates
+$\alpha,\beta$. Identify the vertices $\ell\mathbf e_j$ for the same
+$j\in[M]$ across all graphs in which they occur; denote the resulting
+vertex by $s_j$. Make no other identifications.
+Vertices and edges of each $K_e$ are called coarse vertices and coarse
+edges. Replace every coarse edge by a path of exactly $h$ edges, using new interior
+vertices for each edge. The resulting graph is $G$.
+Write $H_e$ for the image in $G$ of the subdivided $K_e$, and call
+\[
+ t_e=\ell\mathbf e_{\star_e}
+\]
+its terminal. The subgraph $H_0$ ensures connectedness; its terminal is
+not an element of the original universe.
+
+We use vectors with global coordinate set
+\[
+ \mathcal D=[M]\ \cup\ \{\star_e:e\in\mathcal U\cup\{0\}\}.
+\]
+At a coarse vertex $a$ of $K_e$ define $w(a)=ha$, extended by zero
+outside its local coordinate set. In particular, $w(s_j)=R\mathbf e_j$
+and $w(t_e)=R\mathbf e_{\star_e}$.
+For an oriented coarse edge from $a$ to
+$b=a+\mathbf e_\alpha-\mathbf e_\beta$, label its interior vertex at
+distance $t\in[h-1]$ from $a$ by
+\begin{equation}\label{eq:subdivision-label}
+ w(x_t)=ha+t(\mathbf e_\alpha-\mathbf e_\beta).
+\end{equation}
+Changing the orientation gives the same label at the same vertex.
+Labels at identified vertices agree. Every label is nonnegative and
+has total coordinate sum $R$. Along each edge of $G$, every coordinate
+changes in absolute value by at most one. Therefore
+\begin{equation}\label{eq:coordinate-lower-bound}
+ d_G(x,y)\ge |w_\alpha(x)-w_\alpha(y)|
+ \quad(x,y\in V,\ \alpha\in\mathcal D).
+\end{equation}
+
+\begin{lemma}\label{lem:gadget-geometry}
+The graph $G$ is connected and bipartite, and its size is polynomial
+in the Set Cover input size for fixed $\ell$.
+For every $e\in\mathcal U\cup\{0\}$ and $j\in I_e$,
+\begin{equation}\label{eq:gadget-cover-radius}
+ V(H_e)\subseteq B(s_j,R+h/2).
+\end{equation}
+\end{lemma}
+\begin{proof}
+A graph $K_e$ is connected because one can move its $\ell$ coordinate
+units one at a time between coordinates. The graph $H_0$ contains every
+$s_j$, and every other $H_e$ meets it at some $s_j$, proving
+connectedness. Color every coarse vertex zero, and color an interior
+vertex by the parity of its distance from an endpoint of its subdivided
+edge. Since $h=2k$ is even, both endpoints have color zero and every edge
+joins different colors. This is a bipartition.
+
+The number of coarse vertices of $K_e$ is
+$\binom{\ell+|I_e|}{\ell}\le(M+\ell+1)^\ell$, and each has degree at
+most $(M+1)^2$. There are $|\mathcal U|+1$ such graphs and at most
+$h-1\le2M$ new vertices per coarse edge. Enumeration of these vertices
+and edges is polynomial-time for fixed $\ell$.
+
+To prove~\eqref{eq:gadget-cover-radius}, move the $\ell-a_j$ units
+outside coordinate $j$ of a coarse vertex $a$ to coordinate $j$.
+This gives a path of $\ell-a_j$ coarse edges from $a$ to
+$\ell\mathbf e_j$, hence distance at most $h(\ell-a_j)\le R$ in $G$.
+If $x$ is at distance $t$ from one endpoint of a subdivided edge, its
+distance from $s_j$ is at most
+$\min\{R+t,R+h-t\}\le R+h/2$. This also covers all interior vertices.
+\end{proof}
+
+\subsection{Completeness and soundness}
+
+\begin{lemma}\label{lem:hardness-completeness}
+If $\tau(\mathcal U,\mathcal S)\le k$, then $b(G)\le L_{\mathrm y}$.
+\end{lemma}
+\begin{proof}
+Let $J\subseteq[M]$ be a cover of size at most $k$.
+Ignite its vertices $s_j$ at distinct rounds in $[k]$.
+For every $e\in\mathcal U$ at least one such $j$ belongs to $I_e$.
+For $e=0$, every chosen $j$ belongs to $I_0$, and $J$ is nonempty.
+Lemma~\ref{lem:gadget-geometry} shows that the balls of radius $R+h/2$
+at these sources cover $V(G)$. Since
+$L_{\mathrm y}-k=R+h/2$, they fit their assigned rounds.
+Lemma~\ref{lem:legalization} gives the asserted legal sequence.
+\end{proof}
+
+For a vertex $x$ that is not a shared vertex $s_j$, let
+$\operatorname{own}(x)$ be its unique index
+$e\in\mathcal U\cup\{0\}$ with $x\in V(H_e)$. For a shared vertex put
+$\operatorname{own}(x)=\bot$, where $\bot$ is distinct from all indices.
+This is well-defined because only the $s_j$ were identified.
+Define
+\begin{equation}\label{eq:heavy-coordinates}
+ J(x)=\{j\in[M]:w_j(x)\ge h\}.
+\end{equation}
+Nonnegativity and the total sum $R=\ell h$ imply $|J(x)|\le\ell$.
+
+\begin{lemma}\label{lem:ball-extraction}
+For every $x\in V(G)$, the original elements $f\in\mathcal U$ whose
+terminals lie in $B(x,L_{\mathrm n})$ can be covered by at most
+$\ell+1$ sets of $\mathcal S$.
+\end{lemma}
+\begin{proof}
+First consider $f\ne\operatorname{own}(x)$ with
+$d_G(x,t_f)\le L_{\mathrm n}$. Any path from $x$ to $t_f$ meets a
+shared vertex $s_j$ with $j\in I_f$, since only such vertices connect
+$H_f$ to the rest of the graph. If $x$ is already a shared vertex of
+$H_f$, use that vertex if necessary. Choose such a vertex along a
+shortest path. The two portions of this path have lengths at least
+$R-w_j(x)$ and $R$, respectively, by~\eqref{eq:coordinate-lower-bound}:
+use coordinate $j$ for the first portion and $\star_f$ for the second.
+Consequently
+\[
+ 2R-w_j(x)\le d_G(x,t_f)\le 2R-h.
+\]
+Thus $j\in J(x)$ and $f\in S_j$.
+All these elements are covered by the at most $\ell$ sets indexed by
+$J(x)$. If $\operatorname{own}(x)\in\mathcal U$, add any one set
+containing that element, which exists by the definition of the Set
+Cover instance. This covers the only possible exceptional element.
+\end{proof}
+
+\begin{lemma}\label{lem:hardness-soundness}
+If $\tau(\mathcal U,\mathcal S)>\Gamma k$, then
+$b(G)>L_{\mathrm n}$.
+\end{lemma}
+\begin{proof}
+A covering sequence of length at most $L_{\mathrm n}$ covers every
+original terminal with at most $L_{\mathrm n}$ balls, each of radius
+at most $L_{\mathrm n}$. Apply Lemma~\ref{lem:ball-extraction} to each
+center. The extracted sets cover $\mathcal U$, and their number is at
+most
+\[
+ (\ell+1)L_{\mathrm n}
+ =(\ell+1)(4\ell-2)k=\Gamma k,
+\]
+contrary to the hypothesis.
+\end{proof}
+
+\begin{proof}[Proof of Theorem~\ref{thm:hardness}]
+Use Lemma~\ref{lem:set-cover-gap} with the constant in
+\eqref{eq:hardness-constants} and construct $G$ as above.
+Lemmas~\ref{lem:gadget-geometry},
+\ref{lem:hardness-completeness}, and
+\ref{lem:hardness-soundness} prove the claimed polynomial-time
+reduction on connected bipartite graphs.
+For a fixed $\alpha\in[1,2)$, choose a fixed $\ell\ge3$ such that
+\[
+ \alpha\le\frac{L_{\mathrm n}}{L_{\mathrm y}}
+          =2-\frac3{\ell+1}.
+\]
+An $\alpha$-approximation returns length at most $L_{\mathrm n}$ in
+the positive case, whereas every legal sequence has length greater
+than $L_{\mathrm n}$ in the negative case. It would decide this
+NP-hard promise problem in polynomial time.
+\end{proof}
+
+
+\appendix
+\section{Exact verification of the numerical inequality}
+\label{app:certificate}
+
+This appendix specifies finite rational bounds proving
+Lemma~\ref{lem:numerical}. The integer programs in
+Sections~\ref{app:python} and~\ref{app:cpp} evaluate these bounds.
+All exponential functions in the verification have arguments in
+$[0,W]\subset[0,2]$.
+
+\subsection{Outward rational evaluation of the exponential functions}
+
+Set
+\[
+ \mathsf S=10^{12},\qquad \mathsf T=10^{40},\qquad
+ N_r=N_t=65536,\qquad N_q=524288,\qquad C_*=100000.
+\]
+For $d\in\Z_{\ge0}$ define the rational polynomials
+\[
+ E_d(z)=\sum_{i=0}^d\frac{(-1)^iz^i}{i!},
+ \qquad V_d(z)=\sum_{i=0}^d\frac{(-1)^iz^i}{(i+1)!}.
+\]
+Taylor's theorem with its signed remainder gives, for $z\ge0$,
+\begin{equation}\label{eq:taylor-bounds}
+ E_{21}(z)\le e^{-z}\le E_{20}(z),\qquad
+ V_{21}(z)\le\phi(z)\le V_{20}(z).
+\end{equation}
+The second pair also follows by integrating the first pair at $tz$
+over $t\in[0,1]$.
+
+For an upper bound, round every coefficient of $E_{20}$ or $V_{20}$
+up to a multiple of $\mathsf T^{-1}$, round the argument $z$ down
+to a multiple of $\mathsf T^{-1}$, and evaluate by Horner's rule,
+rounding every multiplication up to a multiple of $\mathsf T^{-1}$.
+Finally round up to a multiple of $\mathsf S^{-1}$ and take the minimum
+with one. Denote the resulting bounds by $U_E(z)$ and $U_\phi(z)$.
+For a lower exponential bound use $E_{21}$, round coefficients down,
+round the argument up, round Horner multiplications down, finally
+round down to a multiple of $\mathsf S^{-1}$, and take the maximum
+with zero. Denote it by $L_E(z)$.
+
+These argument-rounding directions are valid because the rounded
+polynomials are decreasing on $[0,2]$. Here are explicit bounds proving
+that fact. The elementary estimate $e^2<8$ gives $e^{-2}>1/8$, and
+\[
+ E_{19}(z)\ge e^{-z}-2^{20}/20!>1/9\quad(0\le z\le2).
+\]
+Thus $E_{20}'=-E_{19}<-1/9$, $E_{21}'=-E_{20}<-1/8$, and
+$V_{20}'(z)=-\int_0^1tE_{19}(tz)\,dt<-1/18$.
+Coefficient rounding changes any of these derivatives in absolute
+value by at most
+$\mathsf T^{-1}\sum_{i=1}^{21}i2^{i-1}<10^{-31}$.
+Indeed,
+\[
+ e\le1+1+\tfrac12+\tfrac16+
+       \tfrac1{24}\sum_{t\ge0}5^{-t}=\tfrac{87}{32}<\tfrac{11}{4},
+\]
+so $e^2<8$.
+At a fixed nonnegative argument, directed Horner rounding preserves
+upper and lower bounds at every step. Consequently
+\begin{equation}\label{eq:oracle-bounds}
+ 0\le L_E(z)\le e^{-z}\le U_E(z)\le1,\qquad
+ \phi(z)\le U_\phi(z)\le1
+ \quad(0\le z\le2).
+\end{equation}
+The programs implement ceilings and floors of signed integers, so
+these assertions include negative intermediate Horner values.
+
+\subsection{Primitive bounds and enclosure of every cut}
+
+Use the primitive grid $x_j=j/N_q$ for $0\le j\le3N_q$.
+Evaluate $g(x_j)$ exactly by~\eqref{eq:g-finite} and define
+\[
+ q_j^-=L_E(g(x_j)),\qquad q_j^+=U_E(g(x_j)).
+\]
+On an open cell $(x_j,x_{j+1})$, the constants $q_j^-$ and
+$q_{j+1}^+$ bound $q_P$ from below and above, respectively.
+Let $P^-(x)$ and $P^+(x)$ be the integrals from zero to $x$ of
+these lower and upper step functions. At grid points, use $q_j^-$
+and $q_j^+$ for point evaluations. Integration at a partial cell is
+linear interpolation of the appropriate step primitive.
+For $0\le u\le v\le3$ these give
+\begin{equation}\label{eq:primitive-bounds}
+ P^-(v)-P^-(u)\le\int_u^vq_P(x)\,dx
+                    \le P^+(v)-P^+(u).
+\end{equation}
+The programs round partial evaluations outward at denominator
+$\mathsf H=\mathsf S N_q$: a subtracted starting primitive is rounded
+in the opposite direction from the ending primitive.
+
+For $r\in[0,1]$ and $e\ge0$, set
+\[
+ Q_r(e)=\int_{x<e}q_P(x)\,d\nu_r(x),\qquad
+ T_r(e)=\nu_r([e,+\infty)),\qquad
+ H_r(e)=Q_r(e)+\phi(g(e))T_r(e).
+\]
+In particular,
+\begin{equation}\label{eq:exact-tail}
+ T_r(e)=W-A_0\ind_{e>r}
+       -\sum_{v=1}^3p_v[e-r-c_{v-1}]_0^{c_v-c_{v-1}}.
+\end{equation}
+Compute lower and upper bounds $Q_r^-(e),Q_r^+(e)$ by the atom
+$A_0q_P(r)\ind_{r<e}$ and by applying~\eqref{eq:primitive-bounds}
+on each of the three shifted density intervals. A density interval
+whose lower endpoint is at least $e$ contributes zero.
+All additions and multiplications by nonnegative densities are
+rounded outward. Then
+\begin{equation}\label{eq:Q-enclosure}
+ Q_r^-(e)\le Q_r(e)\le Q_r^+(e).
+\end{equation}
+For example, the exact unrounded continuous part is
+\[
+ \sum_{\substack{v\in[3]\\r+c_{v-1}<e}}
+       p_v\int_{r+c_{v-1}}^{\min\{e,r+c_v\}}q_P(x)\,dx.
+\]
+The atom is handled separately.
+
+Use radius parameters $\rho_i=i/N_r$, $i\in[N_r]$, and cut points
+$\theta_j=j/N_t$, $j\in\{0,\ldots,3N_t\}$.
+Put $J_c=\lceil c_3N_t\rceil$.
+Because $N_t$ is divisible by $N_r$, the only atom of
+$\nu_{\rho_i}$ is always a cut point.
+For a grid cut, an upper bound for $H_r(\theta_j)$ is
+\begin{equation}\label{eq:cut-point}
+ Q_r^+(\theta_j)+U_\phi(g(\theta_j))T_r(\theta_j).
+\end{equation}
+For every cut $e\in(\theta_j,\theta_{j+1})$, monotonicity gives the
+upper bound
+\begin{equation}\label{eq:cut-cell}
+ Q_r^+(\theta_{j+1})
+ +U_\phi(g(\theta_{j+1}))
+          \bigl(T_r(\theta_j)-A_0\ind_{\theta_j=r}\bigr).
+\end{equation}
+The subtraction removes the atom at the left endpoint: it has moved
+from the tail into the strict prefix on the open cell.
+For $e\ge c_3$, the value of $H_r(e)$ is constant, since both
+$q_P(x)$ and $\phi(g(x))$ equal one for $x\ge c_3$.
+
+By the definition of $\Phi$,
+\[
+ K(r,\theta)=\sup_{e\ge\theta}H_r(e)-Q_r(\theta).
+\]
+Take a reverse running maximum of~\eqref{eq:cut-point} and
+\eqref{eq:cut-cell}, including an upper bound for
+$H_r(c_3)=Q_r(c_3)+T_r(c_3)$. Subtract $Q_r^-(\theta_j)$.
+Taking the minimum of this upper bound with $T_r(\theta_j)$,
+and taking its maximum with zero, still gives an upper bound for
+$K(r,\theta_j)$. If $\theta_j\ge c_3$, use the exact value
+$K(r,\theta_j)=T_r(\theta_j)$.
+Denote the resulting outward-rounded bound by $\overline K_{i,j}$.
+
+Monotonicity in the radius parameter, proved in
+Lemma~\ref{lem:kernel-properties}, yields
+\begin{equation}\label{eq:MN-certificate}
+ M_N(\theta_j)\le\frac1{N_r}\sum_{i=1}^{N_r}\overline K_{i,j}.
+\end{equation}
+The computation uses this bound for $j\le J_c$. For larger $j$ the
+other bound below suffices.
+
+\subsection{The aggregate bound and the capacity minimum}
+
+An exact cumulative integral for $\Lambda$, valid for $x\ge0$, is
+\begin{equation}\label{eq:aggregate-cdf}
+\begin{split}
+ C_\Lambda(x)={}&A_0[x]_0^1\\
+ &+\frac12\sum_{v=1}^3p_v\left(
+ (x-c_{v-1})_+^2-(x-c_v)_+^2
+ -(x-1-c_{v-1})_+^2+(x-1-c_v)_+^2\right).
+\end{split}
+\end{equation}
+It follows by integrating~\eqref{eq:aggregate-density}.
+Thus the masses of all cut cells are exact rationals.
+Since $e^{-D(x)}$ is nondecreasing and $\Lambda$ is supported below
+three,
+\begin{equation}\label{eq:MO-certificate}
+ M_O(\theta_j)\le
+ \sum_{v=j}^{3N_t-1}
+ U_E(D(\theta_{v+1}))
+       \bigl(C_\Lambda(\theta_{v+1})-C_\Lambda(\theta_v)\bigr).
+\end{equation}
+The programs round each cell mass and each product upward at
+denominator $\mathsf H$.
+
+Let $\overline M_j$ be the smaller of the outward-rounded bounds
+\eqref{eq:MN-certificate} and~\eqref{eq:MO-certificate}, using
+\eqref{eq:MO-certificate} alone when $j>J_c$.
+Then $M(\theta_j)\le\overline M_j$.
+Define
+\[
+ C(\theta)=2+a-\theta-M(\theta),\qquad
+ c_j^-=2+a-\theta_j-\overline M_j.
+\]
+The letter $C$ here denotes a real-valued function, not a graph
+component. It is used only in this verification.
+For a cut cell $[\theta_{j-1},\theta_j]$, the rational number
+\begin{equation}\label{eq:density-cell-upper}
+ \beta_j=A_0\ind_{\theta_{j-1}<1}
+  +\sum_{v=1}^3p_v
+    \pos{\min\{1,\theta_j-c_{v-1}\}
+                   -\max\{0,\theta_{j-1}-c_v\}}
+\end{equation}
+is an upper bound for the density of $\Lambda$ on its interior.
+If $\beta_j\le1$, equation~\eqref{eq:envelope-increment} proves
+that $C$ is nonincreasing on that cell. Its minimum there is at the
+right endpoint and is at least $c_j^-$.
+In every other cell, monotonicity of $M$ gives the lower bound
+$c_{j-1}^- - 1/N_t$ throughout the cell.
+
+Start with $b_0=c_0^-$ and recursively define
+\begin{equation}\label{eq:capacity-recursion}
+ b_j=\min\left\{b_{j-1},c_j^-,
+ \begin{cases}
+ c_j^-,&\beta_j\le1,\\
+ c_{j-1}^- -1/N_t,&\beta_j>1
+ \end{cases}\right\}\quad(1\le j\le2N_t).
+\end{equation}
+This is a lower bound for the minimum of $C$ on $[0,\theta_j]$,
+which equals $A(2-\theta_j)$.
+The entire recursion is on the exact scale $\mathsf H$.
+
+Changing variables to $\theta=2-s$ in~\eqref{eq:integral-J} gives
+a nondecreasing integrand:
+\[
+ J=\frac12\int_0^2\frac{e^{-g(\theta/2)}}{A(2-\theta)}\,d\theta.
+\]
+Consequently, if all $b_j>0$, an upper bound is
+\begin{equation}\label{eq:J-finite-certificate}
+ J\le\frac1{2N_t}\sum_{j=1}^{2N_t}
+           \frac{U_E(g(\theta_j/2))}{b_j}.
+\end{equation}
+Each summand is rounded upward to a multiple of $\mathsf S^{-1}$.
+The resulting sum has numerator $131067519775194526$ and denominator
+$2N_t\mathsf S=131072000000000000$.
+The minimum of the computed $b_j$ is
+$54337893542773910/\mathsf H$.
+Since $A$ is nondecreasing, these grid bounds also imply its uniform
+lower bound on $[0,2]$. This completes the proof of
+Lemma~\ref{lem:numerical}.
+
+\subsection{Reproduction and integer ranges}
+
+Compiling this LaTeX file writes three files in the compilation
+directory:
+\begin{itemize}[nosep]
+\item \texttt{graph\_burning\_profile.json};
+\item \texttt{graph\_burning\_certificate.py};
+\item \texttt{graph\_burning\_certificate.cpp}.
+\end{itemize}
+They are also displayed below.
+With Python 3 and a GNU C++17 compiler supporting signed 128-bit
+integers, run
+\begin{quote}\ttfamily\small
+python3 graph\_burning\_certificate.py graph\_burning\_profile.json
+\end{quote}
+on a little-endian machine with eight-byte signed integer arrays.
+The profile, tables, and decisions use integer or rational arithmetic.
+Elapsed-time measurements are only printed.
+
+The Python program has arbitrary-precision integers.
+In the C++ program put $\mathsf H=\mathsf S N_q$ as above.
+Every stored signed 64-bit arithmetic value, apart from its initial
+sentinel, has absolute value less than
+$6\mathsf H<2^{63}$. To check this, primitive sums are at most
+$3\mathsf H$; the scaled values representing $Q_r(e)$ and $T_r(e)$ are each less than
+$2\mathsf H$ including outward rounding; raw capacity uses at most
+$3\mathsf H$, $2\mathsf H$, and $2\mathsf H$ in its three terms.
+The other stored quantities are smaller.
+The largest signed 128-bit products occur in~\eqref{eq:aggregate-cdf}.
+Its three density contributions and its atom contribution are
+nonnegative, and their sum is at most
+\[
+ 2(W\mathsf S)N_q(C_*N_t)^2<2^{126}.
+\]
+The separate squared positive parts are at most $9(C_*N_t)^2$.
+Products for integration in the radius parameter are less than $10^{31}$,
+and the accumulated sums over that parameter are less than $2N_r\mathsf H$.
+All are within signed 128-bit range. The Python program checks the
+displayed $2^{126}$ bound before running the C++ program.
+The C++ program checks the exact total aggregate mass, positive
+capacities, and the final rational inequalities.
+
+\subsection{The rational profile}\label{app:profile}
+
+\lstinputlisting[language={},caption={The rational enlargement profile.}]{graph_burning_profile.json}
+
+\subsection{Table generation}\label{app:python}
+
+\lstinputlisting[language=Python,caption={Directed rational evaluation and table generation.}]{graph_burning_certificate.py}
+
+\subsection{Finite-sum evaluation}\label{app:cpp}
+
+\lstinputlisting[language=C++,caption={Exact bounds for the cut supremum, capacity minimum, and integral.}]{graph_burning_certificate.cpp}
+
+\begin{thebibliography}{9}
+
+\bibitem{BNZ}
+J.~Blauth, C.~N\"obel, and R.~Zenklusen.
+\newblock Toward optimal approximations for resource-minimization for
+fire containment on trees and non-uniform $k$-center.
+\newblock \emph{arXiv:2512.17049}, 2025.
+\newblock \url{https://arxiv.org/abs/2512.17049}.
+
+\bibitem{DS}
+I.~Dinur and D.~Steurer.
+\newblock Analytical approach to parallel repetition.
+\newblock In \emph{Proceedings of the 46th Annual ACM Symposium on
+Theory of Computing}, pages 624--633, 2014.
+\newblock Full version: \emph{arXiv:1305.1979v3}.
+\newblock \url{https://doi.org/10.1145/2591796.2591884}.
+
+\bibitem{Khachiyan}
+L.~G.~Khachiyan.
+\newblock Polynomial algorithms in linear programming.
+\newblock \emph{USSR Computational Mathematics and Mathematical Physics},
+20(1):53--72, 1980.
+\newblock \url{https://doi.org/10.1016/0041-5553(80)90061-0}.
+
+\end{thebibliography}
+\end{document}
+
